@@ -1,0 +1,23 @@
+"""CHL prime-gap kernel package.
+
+Import examples
+---------------
+>>> from chl_kernel import CHLKernel
+>>> kernel = CHLKernel(Y=47, log_x=25.328436)
+>>> kernel.log_R(6, 10)
+>>> kernel.hit_cost(6, 10)
+"""
+from .primes import primes_upto, reduced_residues
+from .singular_series import SingularSeriesCache, is_admissible, nu_mod_q
+from .models import CHLKernel, even_candidates, survives_actual_wheel
+
+__all__ = [
+    "CHLKernel",
+    "SingularSeriesCache",
+    "even_candidates",
+    "is_admissible",
+    "nu_mod_q",
+    "primes_upto",
+    "reduced_residues",
+    "survives_actual_wheel",
+]

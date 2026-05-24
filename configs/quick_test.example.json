@@ -1,0 +1,13 @@
+{
+  "dataset_name": "quick_test",
+  "input_dir": "data/quick_test",
+  "blocks_dir": "blocks",
+  "block_glob": "parent_wide_B{block:02d}.csv.gz",
+  "blocks": [1, 2],
+  "real_prime_sequence": "real_primes.csv.gz",
+  "start": 1000000,
+  "end": 1200000,
+  "gmax": 300,
+  "num_blocks": 2,
+  "log_x_floor": 13
+}

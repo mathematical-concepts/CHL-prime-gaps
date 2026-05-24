@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "chl-prime-gaps"
+version = "1.0.0"
+description = "Conditional Hardy-Littlewood Markov kernels for consecutive prime gaps"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{name = "CHL prime-gaps project"}]
+dependencies = ["numpy>=1.23", "pandas>=1.5", "scipy>=1.10"]
+
+[tool.setuptools]
+packages = ["chl_kernel"]

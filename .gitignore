@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+*.egg-info/
+.ipynb_checkpoints/
+.prime_cache/
+data/
+outputs/
+*.npy
+*.csv.gz
+*.log
