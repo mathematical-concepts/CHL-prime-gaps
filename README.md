@@ -19,8 +19,9 @@ classical asymptotic sieve level.  The no-interior-prime survival term is the
 first-order Poisson correction
 
 $$
-\Omega_Y^{\mathrm{path}}(g_1,g_2;x) = \sum_{2\le u\le g_2-2,\,\text{even}} \frac{\mathfrak S_Y(\{0,g_1,g_1+u,g_1+g_2\})}{\mathfrak S_Y(\{0,g_1,g_1+g_2\})} \frac{1}{\log x}.
+\Omega_Y^{\mathrm{path}}(g_1,g_2;x) = \sum_{2\le u\le g_2-2,\, u \text{ even}} \frac{\mathfrak S_Y(\{0,g_1,g_1+u,g_1+g_2\})}{\mathfrak S_Y(\{0,g_1,g_1+g_2\})} \frac{1}{\log x}.
 $$
+
 ## Repository layout
 
 ```text
