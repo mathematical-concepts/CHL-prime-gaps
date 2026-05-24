@@ -76,7 +76,7 @@ and
 
 $$H_5(u,v)=\{0,g_1,g_1+u,g_1+v,g_1+g_2\}.$$
 
-Such terms are omitted deliberately in CHL2. The present model keeps only the first-order Poisson survival factor in order to remain parameter-free, computationally feasible, and directly interpretable. The modulo-$3$ failure therefore marks a boundary of the approximation, not a hidden success.
+Such terms are omitted deliberately in CHL2. The present model keeps only the first-order Poisson survival factor in order to remain parameter-free, computationally feasible, and directly interpretable. The modulo $3$ failure therefore marks a boundary of the approximation, not a hidden success.
 
 ## A.4. Consequence for the claims of the paper
 
