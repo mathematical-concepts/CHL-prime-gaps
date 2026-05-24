@@ -18,7 +18,7 @@ where $\pi_b$ is the empirical row mass. In the OS run, the empirical and CHL2 d
 
 $$D_3(T^{\mathrm{emp}})=0.455612,\qquad D_3(T^{\mathrm{CHL2}})=0.521890,\qquad D_3(T^{\mathrm{uniform}})=0.500000.$$
 
-Thus the empirical transition prefers changing reduced residue class modulo $3$, whereas CHL2 predicts excess persistence. This is a qualitative wrong-sign failure. The high row-cosine value in this case must therefore not be interpreted as a successful reproduction of the modulo-$3$ transition bias.
+Thus the empirical transition prefers changing reduced residue class modulo $3$, whereas CHL2 predicts excess persistence. This is a qualitative wrong-sign failure. The high row-cosine value in this case must therefore not be interpreted as a successful reproduction of the modulo $3$ transition bias.
 
 ## A.2. Pearson chi-square diagnostic
 
@@ -44,11 +44,11 @@ For the absolute prime-residue OS diagnostic on DS1, the Pearson summaries were:
 | 5 | 78,934,823 | 897,882.34 | 12 | 0.011375 | 0.192411 | 0.236270 |
 | 7 | 78,934,823 | 315,442.52 | 30 | 0.003996 | 0.111342 | 0.130987 |
 
-The modulo-$7$ case is the strongest agreement: both empirical and modeled diagonal probabilities lie below the uniform diagonal probability $1/6$, and the chi-square per transition is smallest. Modulo $5$ is intermediate: CHL2 captures the direction of repulsion but smooths its intensity. Modulo $3$ fails qualitatively because the diagonal bias crosses the uniform baseline in the wrong direction.
+The modulo $7$ case is the strongest agreement: both empirical and modeled diagonal probabilities lie below the uniform diagonal probability $1/6$, and the chi-square per transition is smallest. Modulo $5$ is intermediate: CHL2 captures the direction of repulsion but smooths its intensity. Modulo $3$ fails qualitatively because the diagonal bias crosses the uniform baseline in the wrong direction.
 
 ## A.3. Interpretation: compression of the reduced wheel modulo $3$
 
-We interpret the modulo-$3$ anomaly as a limit of the first-order Poisson no-interior-prime approximation in a maximally compressed reduced residue system. The CHL2 path-exclusion factor is
+We interpret the modulo $3$ anomaly as a limit of the first-order Poisson no-interior-prime approximation in a maximally compressed reduced residue system. The CHL2 path-exclusion factor is
 
 $$E_Y^{\mathrm{path}}(g_1,g_2;x)=\exp\{-\Omega_Y^{\mathrm{path}}(g_1,g_2;x)\},$$
 
@@ -76,7 +76,7 @@ and
 
 $$H_5(u,v)=\{0,g_1,g_1+u,g_1+v,g_1+g_2\}.$$
 
-Such terms are omitted deliberately in CHL2. The present model keeps only the first-order Poisson survival factor in order to remain parameter-free, computationally feasible, and directly interpretable. The modulo-$3$ failure therefore marks a boundary of the approximation, not a hidden success.
+Such terms are omitted deliberately in CHL2. The present model keeps only the first-order Poisson survival factor in order to remain parameter-free, computationally feasible, and directly interpretable. The modulo $3$ failure therefore marks a boundary of the approximation, not a hidden success.
 
 ## A.4. Consequence for the claims of the paper
 
