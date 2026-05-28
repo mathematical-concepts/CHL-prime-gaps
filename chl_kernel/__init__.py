@@ -10,6 +10,15 @@ Import examples
 from .primes import primes_upto, reduced_residues, is_prime_trial_division
 from .singular_series import SingularSeriesCache, is_admissible, nu_mod_q
 from .models import CHLKernel, even_candidates, survives_actual_wheel
+from .cluster_expansion import (
+    even_interior_offsets,
+    h3_tuple,
+    h4_tuple,
+    h5_tuple,
+    omega_path_bernoulli,
+    omega_second_order_full,
+    omega_second_order_lowwheel,
+)
 
 __all__ = [
     "CHLKernel",
@@ -21,4 +30,11 @@ __all__ = [
     "is_prime_trial_division",
     "reduced_residues",
     "survives_actual_wheel",
+    "even_interior_offsets",
+    "h3_tuple",
+    "h4_tuple",
+    "h5_tuple",
+    "omega_path_bernoulli",
+    "omega_second_order_full",
+    "omega_second_order_lowwheel",
 ]

@@ -10,7 +10,13 @@ readme = "README.md"
 requires-python = ">=3.10"
 authors = [{name = "Jose Antonio Cano Gregorio"}]
 license = {text = "MIT"}
-dependencies = ["numpy>=1.23", "pandas>=1.5", "scipy>=1.10"]
+dependencies = [
+    "numpy>=1.23",
+    "pandas>=1.5",
+    "pool>=0.1.2.dev0",
+    "pytest>=9.0.3",
+    "scipy>=1.10",
+]
 
 [tool.setuptools]
 packages = ["chl_kernel"]

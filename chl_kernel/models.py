@@ -10,6 +10,11 @@ from dataclasses import dataclass, field
 from typing import Iterable, Sequence
 
 from .singular_series import SingularSeriesCache
+from .cluster_expansion import (
+    omega_path_bernoulli,
+    omega_second_order_full,
+    omega_second_order_lowwheel,
+)
 
 
 def even_candidates(gmax: int, start: int = 2) -> range:
@@ -107,6 +112,53 @@ class CHLKernel:
                 omega += math.exp(log_s4 - log_s3) / self.log_x
         return float(omega)
 
+    def singular_ratio_h4_h3(self, g1: int, g2: int, u: int) -> float:
+        """Return ``S_Y(H4(u))/S_Y(H3)`` for CHL2/CHL3 corrections.
+
+        ``H3={0,g1,g1+g2}`` and ``H4(u)={0,g1,g1+u,g1+g2}``.
+        If the numerator is inadmissible the ratio is zero.  If the
+        denominator is inadmissible, the surrounding CHL weight is already
+        zero; this helper returns zero to keep diagnostic paths finite.
+        """
+        g1, g2, u = int(g1), int(g2), int(u)
+        log_s3 = self.series.log_singular((0, g1, g1 + g2))
+        if not math.isfinite(log_s3):
+            return 0.0
+        log_s4 = self.series.log_singular((0, g1, g1 + u, g1 + g2))
+        if not math.isfinite(log_s4):
+            return 0.0
+        return float(math.exp(log_s4 - log_s3))
+
+    def singular_ratio_h5_h3(self, g1: int, g2: int, u: int, v: int) -> float:
+        """Return ``S_Y(H5(u,v))/S_Y(H3)`` for full CHL3 diagnostics."""
+        g1, g2, u, v = int(g1), int(g2), int(u), int(v)
+        log_s3 = self.series.log_singular((0, g1, g1 + g2))
+        if not math.isfinite(log_s3):
+            return 0.0
+        log_s5 = self.series.log_singular((0, g1, g1 + u, g1 + v, g1 + g2))
+        if not math.isfinite(log_s5):
+            return 0.0
+        return float(math.exp(log_s5 - log_s3))
+
+    def omega_path_bernoulli(self, g1: int, g2: int) -> tuple[float, dict]:
+        """Bernoulli no-interior correction ``-sum log(1-p_u)``."""
+        return omega_path_bernoulli(g1, g2, self.log_x, self.singular_ratio_h4_h3)
+
+    def omega_second_order_full(self, g1: int, g2: int) -> tuple[float, dict]:
+        """Full quadratic CHL3 second-order cluster correction.
+
+        Intended for diagnostics on small supports, not production DS1 runs.
+        """
+        return omega_second_order_full(
+            g1, g2, self.log_x, self.singular_ratio_h4_h3, self.singular_ratio_h5_h3
+        )
+
+    def omega_second_order_lowwheel(self, g1: int, g2: int, low_primes: Sequence[int]) -> tuple[float, dict]:
+        """Low-wheel CHL3 second-order correction for selected small primes."""
+        return omega_second_order_lowwheel(
+            g1, g2, self.log_x, low_primes, self.singular_ratio_h4_h3
+        )
+
     def log_weight_chl1(self, g1: int, g2: int, eta: float = 0.0) -> float:
         """Unnormalized CHL1 log-weight for candidate ``g2`` after ``g1``."""
         z = self.log_R(g1, g2)
@@ -119,6 +171,44 @@ class CHLKernel:
             return -math.inf
         om = self.omega_path(g1, g2)
         return -math.inf if not math.isfinite(om) else float(z - om + eta * int(g2))
+
+    def log_weight_chl2_bernoulli_path(self, g1: int, g2: int, eta: float = 0.0) -> float:
+        """Unnormalized CHL2-Bernoulli path-exclusion log-weight."""
+        z = self.log_R(g1, g2)
+        if not math.isfinite(z):
+            return -math.inf
+        om, _ = self.omega_path_bernoulli(g1, g2)
+        return -math.inf if not math.isfinite(om) else float(z - om + eta * int(g2))
+
+    def log_weight_chl3_lowwheel(
+        self,
+        g1: int,
+        g2: int,
+        low_primes: Sequence[int],
+        eta: float = 0.0,
+    ) -> tuple[float, dict]:
+        """Unnormalized CHL3 low-wheel second-order log-weight.
+
+        This is experimental.  ``low_primes`` should be preregistered, e.g.
+        ``[3]``, ``[3, 5]`` or ``[3, 5, 7]``.
+        """
+        z = self.log_R(g1, g2)
+        if not math.isfinite(z):
+            return -math.inf, {"inadmissible_h3": 1}
+        om, info = self.omega_second_order_lowwheel(g1, g2, low_primes)
+        if not math.isfinite(om):
+            return -math.inf, info
+        return float(z - om + eta * int(g2)), info
+
+    def log_weight_chl3_full2(self, g1: int, g2: int, eta: float = 0.0) -> tuple[float, dict]:
+        """Unnormalized full CHL3 second-order log-weight for diagnostics."""
+        z = self.log_R(g1, g2)
+        if not math.isfinite(z):
+            return -math.inf, {"inadmissible_h3": 1}
+        om, info = self.omega_second_order_full(g1, g2)
+        if not math.isfinite(om):
+            return -math.inf, info
+        return float(z - om + eta * int(g2)), info
 
     def log_weight_chl2_gap(self, g1: int, g2: int, eta: float = 0.0) -> float:
         """Unnormalized CHL2 endpoint-gap-exclusion log-weight."""
@@ -154,13 +244,14 @@ class CHLKernel:
         om = self.omega_path(g1, g2)
         return math.inf if not math.isfinite(om) else float(-r + om)
 
-    def normalized_distribution(self, g1: int, candidates: Iterable[int], model: str = "chl2_path", eta: float = 0.0) -> dict[int, float]:
+    def normalized_distribution(self, g1: int, candidates: Iterable[int], model: str = "chl2_path", eta: float = 0.0, low_primes: Sequence[int] | None = None) -> dict[int, float]:
         """Return a normalized distribution over candidate gaps.
 
         Parameters
         ----------
         model:
-            One of ``'chl2_path'``, ``'chl2_gap'``, ``'chl1'``.
+            One of ``'chl2_path'``, ``'chl2_gap'``, ``'chl2_bernoulli'``,
+            ``'chl3_lowwheel'`` or ``'chl1'``.
         """
         weights: dict[int, float] = {}
         max_log = -math.inf
@@ -169,6 +260,10 @@ class CHLKernel:
                 z = self.log_weight_chl2_path(g1, h, eta)
             elif model == "chl2_gap":
                 z = self.log_weight_chl2_gap(g1, h, eta)
+            elif model == "chl2_bernoulli":
+                z = self.log_weight_chl2_bernoulli_path(g1, h, eta)
+            elif model == "chl3_lowwheel":
+                z, _ = self.log_weight_chl3_lowwheel(g1, h, low_primes or (), eta)
             elif model == "chl1":
                 z = self.log_weight_chl1(g1, h, eta)
             else:

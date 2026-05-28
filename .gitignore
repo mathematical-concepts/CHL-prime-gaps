@@ -11,3 +11,9 @@ outputs/
 *.npy
 *.csv.gz
 *.log
+
+# Editor / IDE
+.idea/
+
+# Notas personales de comandos
+cano
