@@ -1,0 +1,13 @@
+cff-version: 1.2.0
+title: "CHL-prime-gaps: Conditional Hardy--Littlewood Markov kernels for consecutive prime gaps"
+message: "If you use this software, please cite it using the metadata below."
+type: software
+authors:
+  - family-names: Cano Gregorio
+    given-names: Jose Antonio
+version: "v0.0"
+doi: 10.5281/zenodo.20368549
+url: "https://github.com/mathematical-concepts/CHL-prime-gaps"
+repository-code: "https://github.com/mathematical-concepts/CHL-prime-gaps"
+date-released: "2026-05-24"
+license: MIT

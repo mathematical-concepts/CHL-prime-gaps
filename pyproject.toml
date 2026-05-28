@@ -8,7 +8,8 @@ version = "1.0.0"
 description = "Conditional Hardy-Littlewood Markov kernels for consecutive prime gaps"
 readme = "README.md"
 requires-python = ">=3.10"
-authors = [{name = "CHL prime-gaps project"}]
+authors = [{name = "Jose Antonio Cano Gregorio"}]
+license = {text = "MIT"}
 dependencies = ["numpy>=1.23", "pandas>=1.5", "scipy>=1.10"]
 
 [tool.setuptools]

@@ -1,5 +1,8 @@
 # CHL-prime-gaps
 
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.20368549.svg)](https://doi.org/10.5281/zenodo.20368549)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 Reproducible code for the **Conditional Hardy--Littlewood Markov kernel** for
 consecutive prime gaps.
 
@@ -19,7 +22,11 @@ classical asymptotic sieve level.  The no-interior-prime survival term is the
 first-order Poisson correction
 
 $$
-\Omega_Y^{\mathrm{path}}(g_1,g_2;x) = \sum_{2\le u\le g_2-2,\, u \text{ even}} \frac{\mathfrak S_Y(\{0,g_1,g_1+u,g_1+g_2\})}{\mathfrak S_Y(\{0,g_1,g_1+g_2\})} \frac{1}{\log x}.
+\Omega_Y^{\mathrm{path}}(g_1,g_2;x)
+=
+\sum_{2\le u\le g_2-2,\ u\ \mathrm{even}}
+\frac{\mathfrak S_Y(\{0,g_1,g_1+u,g_1+g_2\})}
+     {\mathfrak S_Y(\{0,g_1,g_1+g_2\})}\frac{1}{\log x}.
 $$
 
 ## Repository layout
@@ -44,9 +51,15 @@ pip install -r requirements.txt
 pip install -e .
 ```
 
-## Quick smoke test
+## Running the Smoke Test
 
-Generate a small empirical dataset:
+Run the kernel smoke test:
+
+```bash
+python tests/test_kernel_smoke.py
+```
+
+Then generate a small empirical dataset:
 
 ```bash
 python data_generation/generate_prime_gap_blocks.py --quick-test --output-dir data/quick_test
@@ -147,13 +160,35 @@ print(kernel.hit_cost(g1=6, g2=10))
 ## Scientific scope
 
 This repository does not claim a proof of the Riemann hypothesis, Goldbach's
-conjecture, the twin-prime conjecture, or new asymptotic prime-gap bounds.  It
+conjecture, the twin-prime conjecture, or new asymptotic prime-gap bounds. It
 provides a reproducible parameter-free conditional Markov kernel derived from
 truncated Hardy--Littlewood singular-series ratios plus a first-order Poisson
 no-interior-prime survival correction, together with empirical audits and
 research tools.
 
+The first-order Poisson no-interior correction is deliberately limited. In the
+absolute prime-residue Oliver--Soundararajan diagnostic, CHL2 captures the
+modular repulsion structure well for modulus 7 and moderately for modulus 5,
+but it has a documented wrong-sign failure in modulus 3. This low-wheel anomaly
+is treated as a boundary of the first-order approximation, not as a positive
+validation.
+
+## Citation
+
+Zenodo archive: https://doi.org/10.5281/zenodo.20368549
+
+```bibtex
+@software{cano_gregorio_chl_prime_gaps_2026,
+  author    = {Cano Gregorio, Jose Antonio},
+  title     = {CHL-prime-gaps: Conditional Hardy--Littlewood Markov kernels for consecutive prime gaps},
+  year      = {2026},
+  publisher = {Zenodo},
+  version   = {v0.0},
+  doi       = {10.5281/zenodo.20368549},
+  url       = {https://doi.org/10.5281/zenodo.20368549},
+}
+```
+
 ## License
 
-No license has been selected in this generated package.  Add a license before
-publishing if you want to grant public reuse rights.
+This project is released under the MIT License. See [LICENSE](LICENSE).

@@ -7,7 +7,7 @@ Import examples
 >>> kernel.log_R(6, 10)
 >>> kernel.hit_cost(6, 10)
 """
-from .primes import primes_upto, reduced_residues
+from .primes import primes_upto, reduced_residues, is_prime_trial_division
 from .singular_series import SingularSeriesCache, is_admissible, nu_mod_q
 from .models import CHLKernel, even_candidates, survives_actual_wheel
 
@@ -18,6 +18,7 @@ __all__ = [
     "is_admissible",
     "nu_mod_q",
     "primes_upto",
+    "is_prime_trial_division",
     "reduced_residues",
     "survives_actual_wheel",
 ]

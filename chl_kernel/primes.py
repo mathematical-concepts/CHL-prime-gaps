@@ -33,7 +33,7 @@ def primes_upto(n: int) -> tuple[int, ...]:
     return tuple(i for i in range(n + 1) if sieve[i])
 
 
-def is_probable_prime_trial(n: int) -> bool:
+def is_prime_trial_division(n: int) -> bool:
     """Deterministic trial-division primality check for small/medium integers.
 
     This is not meant for record-scale primality testing.  It is used only in

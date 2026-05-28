@@ -33,11 +33,11 @@
 \newcommand{\loglik}{\ell}
 \title{CHL2: A Conditional Hardy--Littlewood Markov Kernel for Consecutive Prime Gaps}
 \author{Jose Antonio Cano Gregorio}
-\date{Whitepaper v1.3 --- Final Release Candidate (Pre-submission Review)}
+\date{Whitepaper v1.4 --- Repository and Editorial Final Candidate}
 \begin{document}
 \maketitle
 \begin{abstract}
-\noindent\textbf{Whitepaper v1.3 --- Final Release Candidate (Pre-submission Review).}\par
+\noindent\textbf{Whitepaper v1.4 --- Repository and Editorial Final Candidate.}\par
 This paper introduces CHL2, a finite conditional Markov kernel for consecutive prime gaps obtained by factorizing the Hardy--Littlewood singular-series heuristic into a transition law.  If $g_1=p_{n+1}-p_n$ is the previous gap and $g_2=p_{n+2}-p_{n+1}$ is the next candidate gap, the CHL1 factor is the conditional singular-series ratio
 \[
 R_Y(g_2\mid g_1)=\frac{\SY(\{0,g_1,g_1+g_2\})}{\SY(\{0,g_1\})}.
@@ -112,7 +112,7 @@ where
 \[
 Z_Y^{\CHLone}(g_1;x)=\sum_{\substack{h\ge 2\\h\ \mathrm{even}}}\mathbf{1}_{\mathrm{adm},Y}^{(3)}(g_1,h)R_Y(h\mid g_1)\exp(\eta_Y(x)h).
 \]
-The scalar $\eta_Y(x)$ is a Lagrange multiplier used to impose the finite-window mean-gap scale. In the reported implementation, $\eta_Y$ is solved numerically within the evaluated support so that the model mean of $g_2$ matches the empirical/PNT local scale in that block and stratum. On a finite even support, this exponential-family mean is monotone in $\eta_Y$ whenever the support has nonzero variance; hence the anchoring equation has a unique solution and is solved stably by bisection/Newton search. Thus $\eta_Y$ is not a fitted local feature: its value is determined by the PNT/empirical scale anchor within the finite support. While CHL1 captures path-dependent arithmetic weight, it does not enforce strict consecutiveness.
+The scalar $\eta_Y(x)$ is a Lagrange multiplier used to impose the finite-window mean-gap scale. In the reported implementation, $\eta_Y$ is solved numerically within the evaluated support so that the model mean of $g_2$ matches the empirical/PNT local scale in that block and stratum. On a finite even support, the exponential-family log-partition function is strictly convex in $\eta_Y$ whenever the support has nonzero variance, and the corresponding mean is monotone in $\eta_Y$; hence the anchoring equation $\mathbb E[g_2]=\log x$ admits a unique solution, obtainable by bisection or Newton--Raphson. Thus $\eta_Y$ is not a fitted local feature: its value is determined by the PNT/empirical scale anchor within the finite support. While CHL1 captures path-dependent arithmetic weight, it does not enforce strict consecutiveness.
 \section{CHL2: adding no-interior-prime exclusion}
 CHL1 models the three endpoints as a prime-like constellation. Consecutive gaps require more: there must be no prime in the future interval between the second and third endpoints.
 \subsection{Derivation of the path-sensitive interior intensity}
@@ -149,7 +149,7 @@ The audit compares CHL2 against: CHL1 ratio-only; noPhi conditional support; HL2
 \subsection{Data and strata}
 The empirical window consists of ten sequential DS1 blocks near $10^{11}$ with $78{,}934{,}825$ observed transitions. The blocks are chronological windows, not randomly shuffled samples, which is essential for a Markov transition audit. The main run uses $Y=47$ as the truncation horizon. The cutoff-sensitivity run evaluates $Y\in\{31,47,61,73\}$. The filters are defined by $m=\max(g_1,g_2)$: \texttt{ALL}, \texttt{LOW\_ONLY\_LE58}, \texttt{MID\_59\_120}, \texttt{MID\_121\_240}, \texttt{MID\_121\_400}, \texttt{NO\_58}, \texttt{NO\_120}, and \texttt{NO\_240}.
 \subsection{Metrics}
-The primary metric is conditional log-likelihood per event, $\loglik(M)=N^{-1}\sum_i \log P_M(g_{2,i}\mid g_{1,i},x_i)$. Conditional log-likelihood is the standard information-theoretic metric for transition kernels: it is additive across events and penalizes tail misalignment, unlike distance metrics that may compress sparse regimes. We also report conditional cross-entropy and KL divergence. Pairwise gains are $\Delta\loglik(M,B)=\loglik(M)-\loglik(B)$. A positive value means that model $M$ assigns higher observed conditional likelihood than baseline $B$.
+The primary metric is conditional log-likelihood per event, $\loglik(M)=N^{-1}\sum_i \log P_M(g_{2,i}\mid g_{1,i},x_i)$. Conditional log-likelihood is used because it is additive across events, directly corresponds to cross-entropy minimization, and penalizes tail misalignment more sensitively than integral distance metrics in sparse regimes. We also report conditional cross-entropy and KL divergence. Pairwise gains are $\Delta\loglik(M,B)=\loglik(M)-\loglik(B)$. A positive value means that model $M$ assigns higher observed conditional likelihood than baseline $B$.
 \section{Main results at $Y=47$}
 The path-sensitive CHL2 model is the best conditional log-likelihood model in every stratum at $Y=47$ (truncation horizon).
 \begin{table}[H]\centering\small
@@ -318,6 +318,8 @@ More precisely, the static triple-constellation weight becomes a conditional tra
 \section{Forward-looking remarks}
 This final section is explicitly forward-looking. It is included to define possible next research directions and to prevent the empirical contribution from being confused with an announced proof. The proposals below are heuristic or programmatic unless explicitly stated otherwise; they are not part of the empirical validation claim of the paper.
 \subsection{From conditional kernels to adaptive sieve weights}
+\textbf{Research-outlook disclaimer.} This subsection is a research outlook; the expressions below are conjectural linearizations, not proven optimality conditions. Analytic obstacles in mapping probability distributions to sieve weights are acknowledged.
+
 CHL2 does not compete with classical sieves. It supplies a conditional target distribution that classical sieve weights do not usually define. A future adaptive sieve program could ask whether Selberg-type weights can be projected toward $P_{\CHLtwo}(h\mid g_1,x)$.
 
 Let $w_\lambda(h)=\sum_{d\mid P_Y,\ d\mid h}\mu(d)\lambda_d$. A probabilistic reinterpretation of the squared weight gives

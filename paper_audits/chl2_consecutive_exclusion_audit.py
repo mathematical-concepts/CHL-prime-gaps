@@ -57,8 +57,16 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 from collections import Counter
 
+# Allow running this script directly from the repository root without installing.
+import sys
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
 import numpy as np
 import pandas as pd
+
+from chl_kernel.primes import primes_upto
 
 
 FILTERS = {
@@ -230,19 +238,6 @@ def parse_blocks_arg(s: Optional[str], default: Sequence[int]) -> List[int]:
         else:
             out.append(int(part))
     return sorted(set(out))
-
-
-def primes_upto(n: int) -> List[int]:
-    n = int(n)
-    if n < 2:
-        return []
-    sieve = bytearray(b"\x01") * (n + 1)
-    sieve[0:2] = b"\x00\x00"
-    for p in range(2, int(n**0.5) + 1):
-        if sieve[p]:
-            start = p * p
-            sieve[start:n+1:p] = b"\x00" * (((n - start) // p) + 1)
-    return [i for i in range(2, n + 1) if sieve[i]]
 
 
 def logsumexp(a: np.ndarray) -> float:
