@@ -12,18 +12,11 @@ already-generated CHL2 OS outputs without rerunning the full path-exclusion kern
 """
 from __future__ import annotations
 import argparse
-import sys
 import math
 from pathlib import Path
 from typing import Dict, List
 import numpy as np
 import pandas as pd
-
-# Allow execution as a file from a fresh clone without requiring pip install -e . first.
-_REPO_ROOT = Path(__file__).resolve().parents[1]
-if str(_REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT))
-from chl_kernel.telemetry import telemetry_start, write_telemetry
 
 
 def safe_chi2_sf(x: float, df: int) -> float:
@@ -108,11 +101,7 @@ def main() -> None:
     ap.add_argument('--summary-csv', default=None, help='Optional existing summary CSV to enrich/merge')
     ap.add_argument('--out', default='chl2_os_prime_residue_chisquare.csv')
     ap.add_argument('--summary-out', default=None, help='Optional merged summary output')
-    ap.add_argument('--telemetry-json', default=None, help='Optional runtime telemetry JSON path. Default: sibling of --out.')
     args = ap.parse_args()
-    telemetry = telemetry_start()
-    telemetry["script"] = "os_prime_residue_diagnostic"
-    telemetry["args"] = vars(args)
     mat = pd.read_csv(args.matrix_csv)
     rows: List[Dict[str, float]] = []
     for (_, _), grp in mat.groupby(['q','model']):
@@ -126,18 +115,6 @@ def main() -> None:
         out = args.summary_out or str(Path(args.summary_csv).with_name(Path(args.summary_csv).stem + '_with_chisquare.csv'))
         merged.to_csv(out, index=False)
         print(f'wrote {out}')
-    telemetry_path = Path(args.telemetry_json) if args.telemetry_json else Path(args.out).with_name('os_prime_residue_diagnostic_telemetry.json')
-    write_telemetry(
-        telemetry_path,
-        telemetry,
-        matrix_csv=str(args.matrix_csv),
-        summary_csv=str(args.summary_csv) if args.summary_csv else None,
-        output_csv=str(args.out),
-        matrix_rows=int(len(mat)),
-        chi_square_rows=int(len(chi)),
-        modules=sorted([int(x) for x in mat['q'].dropna().unique()]) if 'q' in mat.columns else [],
-        models=sorted([str(x) for x in mat['model'].dropna().unique()]) if 'model' in mat.columns else [],
-    )
 
 if __name__ == '__main__':
     main()

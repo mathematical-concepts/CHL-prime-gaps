@@ -33,11 +33,11 @@
 \newcommand{\loglik}{\ell}
 \title{CHL2: A Conditional Hardy--Littlewood Markov Kernel for Consecutive Prime Gaps}
 \author{Jose Antonio Cano Gregorio}
-\date{Whitepaper v1.5 --- Final Candidate with CHL3 Negative-Control Remark}
+\date{Whitepaper v1.4 --- Repository and Editorial Final Candidate}
 \begin{document}
 \maketitle
 \begin{abstract}
-\noindent\textbf{Whitepaper v1.5 --- Final Candidate with CHL3 Negative-Control Remark.}\par
+\noindent\textbf{Whitepaper v1.4 --- Repository and Editorial Final Candidate.}\par
 This paper introduces CHL2, a finite conditional Markov kernel for consecutive prime gaps obtained by factorizing the Hardy--Littlewood singular-series heuristic into a transition law.  If $g_1=p_{n+1}-p_n$ is the previous gap and $g_2=p_{n+2}-p_{n+1}$ is the next candidate gap, the CHL1 factor is the conditional singular-series ratio
 \[
 R_Y(g_2\mid g_1)=\frac{\SY(\{0,g_1,g_1+g_2\})}{\SY(\{0,g_1\})}.
@@ -48,7 +48,7 @@ CHL2 adds a first-order Poisson no-interior-prime survival factor derived from c
 \]
 Thus the model weights not only the three endpoint positions but also the absence of a prime in the future interval, which is the missing consecutiveness condition in a triple-constellation model.
 
-The empirical DS1 audit covers ten sequential blocks near $10^{11}$ and $78{,}934{,}825$ observed transitions. At $Y=47$ (truncation horizon), CHL2 path-exclusion is the best conditional log-likelihood model in every evaluated stratum and improves the CHL1 ratio-only kernel in all filters. A cutoff sweep over $Y\in\{31,47,61,73\}$ preserves the sign of the gain in every stratum and against classical zero-memory baselines, including Cramer--Granville variants. An absolute prime-residue Oliver--Soundararajan diagnostic gives partial validation: strong agreement in modulus $7$, moderate agreement in modulus $5$, and a documented wrong-sign limitation in modulus $3$. A follow-up negative-control experiment with strict low-wheel second-order cluster cumulants preserved the expected hard-zero behavior of inadmissible quintic configurations but did not remove the qualitative $q=3$ sign error; this is treated as evidence for a separate direct modular-transfer mechanism rather than as a defect in the conditional gap-survival claim.
+The empirical DS1 audit covers ten sequential blocks near $10^{11}$ and $78{,}934{,}825$ observed transitions. At $Y=47$ (truncation horizon), CHL2 path-exclusion is the best conditional log-likelihood model in every evaluated stratum and improves the CHL1 ratio-only kernel in all filters. A cutoff sweep over $Y\in\{31,47,61,73\}$ preserves the sign of the gain in every stratum and against classical zero-memory baselines, including Cramer--Granville variants. An absolute prime-residue Oliver--Soundararajan diagnostic gives partial validation: strong agreement in modulus $7$, moderate agreement in modulus $5$, and a documented wrong-sign limitation in modulus $3$.
 
 The paper does not claim a proof of the Riemann Hypothesis, Goldbach's conjecture, the twin-prime conjecture, or any new asymptotic theorem on prime gaps. The claim is narrower: CHL2 is a finite, parameter-free conditional kernel, once $Y$ and the local scale are fixed, derived from classical singular-series structure and a first-order no-interior survival correction. A final forward-looking section proposes a heuristic variational bridge from conditional kernels to adaptive sieve weights; it is explicitly not presented as a proven result.
 \end{abstract}
@@ -343,22 +343,6 @@ This connects naturally with local-level and weighted-sieve literature, includin
 Maynard--Tao weights are designed to detect multiple primes inside translated admissible tuples. A CHL2-guided variant would not replace that functional. It would reinterpret small configurations, especially $k=2$ or $k=3$, as conditional transitions. For example, a twin-prime channel could be studied as a transition involving $g_1=2$ and a candidate next gap $g_2$, weighted by the conditional singular-series ratio and the no-interior survival factor.
 
 This is proposed as an outlook, not as an announced improvement to Maynard--Tao theorems. The analytic obstacles are significant: conditioning on a previous gap changes the averaging structure and can interfere with the factorization properties that make standard sieve estimates tractable.
-\subsection{Direct modular transfer as a separate problem}
-The present paper studies consecutive prime gaps through conditional interior survival. In this framework, the CHL2 kernel estimates the probability that a proposed next gap survives the Hardy--Littlewood endpoint structure and contains no interior prime. This is a gap-survival problem.
-
-The prime-residue transition matrices appearing in the Oliver--Soundararajan diagnostic suggest a related but distinct problem. For a modulus $q$, define
-\[
-T_q(b,a)=P(p_n\equiv a\pmod q\mid p_{n-1}\equiv b\pmod q),
-\]
-where $a,b$ range over reduced residue classes. CHL2 induces a prediction for $T_q$, but it is not designed as a direct transfer law on residue states. The failure in the binary reduced system modulo $3$ indicates that some micro-scale residue transitions may require a transfer mechanism not expressible purely as no-interior survival.
-
-We therefore regard direct modular transfer kernels as a separate research direction. A future model would study the residual transition law
-\[
-\mathcal{T}_q(b,a)=\log T_q^{\mathrm{emp}}(b,a)-\log T_q^{\CHLtwo}(b,a),
-\]
-or an equivalent parameter-free arithmetic approximation to it. Such a programme should be developed separately from CHL2, because introducing a direct transfer factor into the present kernel would change the object under study: from survival inside a candidate gap to state-to-state modular transport.
-
-This separation is deliberate. CHL2 remains a conditional Hardy--Littlewood gap-survival kernel. Direct modular transfer is a natural next problem, especially for low wheels such as $q=3$, but it should be analysed as a distinct mechanism rather than retrofitted into the present model.
 \subsection{Computational outlook: prioritized search and Hit@K}
 The CHL2 cost $\mathcal C_Y(g_2\mid g_1;x)=-\log R_Y(g_2\mid g_1)+\Omegapath(g_1,g_2;x)$ can be used as a parameter-free ranking oracle for candidate continuations of a prime-gap path. A natural benchmark is Hit@K: among the top $K$ candidate gaps ranked by $\mathcal C_Y$, how often does the true next gap appear? Such a benchmark would not prove a theorem, but it could establish practical value in search prioritization for rare constellations, structured prime patterns, or candidate record gaps.
 \appendix
@@ -452,39 +436,14 @@ H_5(u,v)=\{0,g_1,g_1+u,g_1+v,g_1+g_2\}.
 \]
 Such terms are omitted deliberately in CHL2.  The present model keeps only the first-order Poisson survival factor in order to remain parameter-free, computationally feasible, and directly interpretable.  The modulo-$3$ failure therefore marks a boundary of the approximation, not a hidden success.
 
-
-\subsection*{A.4. Remark on higher-order low-wheel sieve corrections}
-
-A natural question is whether the $q=3$ anomaly can be removed by replacing the first-order Poisson no-interior approximation with a stricter inclusion--exclusion correction. We investigated this possibility experimentally through second-order low-wheel cluster cumulants. In this variant, unordered pairs of interior candidates $u < v$ are evaluated through the quintic extension
-\[
-H_5(u,v)=\{0,g_1,g_1+u,g_1+v,g_1+g_2\},
-\]
-and configurations that exhaust the reduced residue space modulo small primes are assigned hard zeros in the corresponding low-wheel singular factor.
-
-This correction behaves in the expected algebraic direction. When $H_5(u,v)$ becomes inadmissible in the low wheel, the joint contribution vanishes and the pair cumulant becomes negative:
-\[
-\kappa_{uv}=p_{uv}-p_up_v=-p_up_v.
-\]
-Since the second-order intensity has the form
-\[
-\Omega_Y^{(2)}=\Omega_Y^{(1)}-\sum_{u < v}\kappa_{uv},
-\]
-such negative cumulants increase the no-interior intensity and therefore lower the survival probability. Thus the strict low-wheel correction correctly identifies mutually exclusive interior configurations.
-
-However, our experimental evaluation showed that these negative hard-zero contributions are largely offset by positive cumulants from pairs occupying compatible or repeated low-wheel residue classes. Consequently, the correction slightly improves some conditional likelihood scores but does not reverse the qualitative $q=3$ sign error. The empirical transition remains diagonally repulsive, while the corrected no-interior model still predicts diagonal persistence.
-
-This suggests that the $q=3$ anomaly is not merely an artifact of using a first-order Poisson truncation for interior-prime exclusion. In the compressed two-state reduced residue system modulo $3$, pairwise interior exclusion detects local impossibilities but does not encode the full global capacity constraint of the residue space. By the pigeonhole principle, saturation effects in such a binary system are collective: isolated pair cumulants can register hard zeros, but they do not necessarily generate the correct state-to-state transfer law.
-
-We therefore interpret the $q=3$ failure as evidence for a missing direct modular transfer mechanism, rather than as a defect that can be repaired by no-interior sieve exclusion alone in the first- and second-order forms tested here. This does not affect the conditional gap-likelihood results of CHL2, nor the stronger agreement observed for $q=5$ and $q=7$; it identifies a sharper boundary between interior survival modelling and direct modular residue transfer.
-
-\subsection*{A.5. Consequence for the claims of the paper}
+\subsection*{A.4. Consequence for the claims of the paper}
 
 The $q=3$ anomaly is not fatal to the main CHL2 claim.  The main claim concerns conditional gap prediction and the path-sensitive improvement of CHL2 over CHL1 and zero-memory baselines.  Those likelihood gains are stable across filters, blocks, and the evaluated truncation horizons.  The anomaly does, however, show that CHL2 in its present form is structurally insufficient for micro-biases in binary reduced residue systems.  Consequently, the paper treats modulo $3$ as a failure mode of the first-order model and not as positive validation.
 
-This distinction is essential.  CHL2 is a strong first-order conditional kernel for consecutive prime gaps; it is not a complete model of every low-modulus residue bias.  The second-order low-wheel follow-up described above did not repair the $q=3$ wrong-sign effect.  We therefore regard direct modular transfer, rather than additional no-interior survival terms alone, as the appropriate next object of study.
+This distinction is essential.  CHL2 is a strong first-order conditional kernel for consecutive prime gaps; it is not a complete model of every low-modulus residue bias.  A future CHL3-style refinement would need to test whether second-order inclusion-exclusion or cluster corrections repair the $q=3$ wrong-sign effect without degrading the parameter-free likelihood gains that make CHL2 useful.
 
 \section{Reproducibility summary}
-The CHL2 audits used ten parent-wide DS1 blocks and the real chronological prime sequence for the absolute residue diagnostic. The main run used $Y=47$ as truncation horizon, path-exclusion enabled, and all blocks B01--B10. The cutoff sweep used $Y\in\{31,47,61,73\}$. The OS absolute run used $q=3,5,7$ and the model \texttt{CHL2\_path\_excl\_cond\_eta}. The path-exclusion cache is an acceleration artifact and not a fitted model object. Repository scripts also write runtime telemetry JSON files recording elapsed wall-clock time, command-line arguments, CPU count, truncation horizon, block counts, and output-row counts. These telemetry files are reproducibility aids only; they are not used by the mathematical kernels and do not affect any reported probability or likelihood.
+The CHL2 audits used ten parent-wide DS1 blocks and the real chronological prime sequence for the absolute residue diagnostic. The main run used $Y=47$ as truncation horizon, path-exclusion enabled, and all blocks B01--B10. The cutoff sweep used $Y\in\{31,47,61,73\}$. The OS absolute run used $q=3,5,7$ and the model \texttt{CHL2\_path\_excl\_cond\_eta}. The path-exclusion cache is an acceleration artifact and not a fitted model object.
 \section{AI-assisted workflow disclosure}
 The author used AI-assisted systems, including ChatGPT, Gemini, and related tools, as interactive research assistants during exploratory, coding, diagnostic, and drafting phases. Their use included code prototyping, debugging, construction of diagnostic tests, adversarial critique of hypotheses, summarization of numerical outputs, and drafting support. All experiments were executed locally by the author. All reported claims, mathematical formulations, code selections, and interpretations were reviewed and curated by the author, who assumes full responsibility for the manuscript. No AI system is listed as an author.
 \begin{thebibliography}{99}

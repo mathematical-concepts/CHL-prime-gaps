@@ -18,8 +18,7 @@ python paper_audits/chl2_consecutive_exclusion_audit.py \
 ```
 
 This writes `chl2_conditional_summary.csv`, `chl2_pairwise_gains.csv`,
-`chl2_memory_irreducibility.csv`, `chl2_runtime_telemetry.json`, and related
-diagnostics.
+`chl2_memory_irreducibility.csv`, and related diagnostics.
 
 ## Truncation-horizon Y-sweep
 
@@ -36,8 +35,6 @@ python paper_audits/chl2_y_sweep.py \
   --output-dir outputs/chl2_y_sweep
 ```
 
-The sweep writes `chl2_y_sweep_telemetry.json` in the sweep output directory.
-
 ## Oliver--Soundararajan prime-residue diagnostic
 
 The main audit can run the prime-residue OS diagnostic directly:
@@ -46,11 +43,12 @@ The main audit can run the prime-residue OS diagnostic directly:
 python paper_audits/chl2_consecutive_exclusion_audit.py \
   --config data/ds1_1e11_w2e9_g2400/config.generated.json \
   --root . \
-  --blocks 1-10 \
   --path-exclusion \
   --reuse-path-cache \
   --prime-csv AUTO \
   --os-prime-mods 3,5,7 \
+  --require-os \
+  --os-only \
   --output-dir outputs/chl2_os
 ```
 
@@ -62,6 +60,3 @@ python paper_audits/os_prime_residue_diagnostic.py \
   --summary-csv outputs/chl2_os/chl2_os_prime_residue_summary.csv \
   --out outputs/chl2_os/chl2_os_prime_residue_chisquare.csv
 ```
-
-The standalone diagnostic writes `os_prime_residue_diagnostic_telemetry.json` by
-default next to the output CSV unless `--telemetry-json` is supplied.

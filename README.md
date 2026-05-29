@@ -91,7 +91,7 @@ python research_tools/chl2_hitk_oracle.py \
 
 ## DS1-style reproduction
 
-Generate empirical data around $10^{11}$:
+Generate empirical data around \(10^{11}\):
 
 ```bash
 python data_generation/generate_prime_gap_blocks.py \
@@ -113,8 +113,6 @@ python paper_audits/chl2_consecutive_exclusion_audit.py \
   --path-exclusion \
   --workers 0 \
   --parallel-mode auto \
-  --path-chunk-size 0 \
-  --path-target-tasks-per-worker 6 \
   --output-dir outputs/chl2_main
 ```
 
@@ -139,60 +137,13 @@ Oliver--Soundararajan absolute prime-residue diagnostic:
 python paper_audits/chl2_consecutive_exclusion_audit.py \
   --config data/ds1_1e11_w2e9_g2400/config.generated.json \
   --root . \
-  --blocks 1-10 \
   --path-exclusion \
-  --workers 0 \
-  --parallel-mode auto \
-  --path-chunk-size 0 \
-  --path-target-tasks-per-worker 6 \
+  --reuse-path-cache \
   --prime-csv AUTO \
   --os-prime-mods 3,5,7 \
+  --require-os \
+  --os-only \
   --output-dir outputs/chl2_os
-```
-
-## Runtime telemetry
-
-The executable scripts write lightweight JSON telemetry so researchers can compare runtimes across machines and reproduce execution conditions. These files are descriptive only; they are not used by the mathematical kernel and do not affect any likelihood, probability, or diagnostic value.
-
-Typical telemetry outputs are:
-
-```text
-data/quick_test/data_generation_telemetry.json
-outputs/chl2_main/chl2_runtime_telemetry.json
-outputs/chl2_y_sweep/chl2_y_sweep_telemetry.json
-outputs/chl2_os/chl2_runtime_telemetry.json
-outputs/os_standalone/os_prime_residue_diagnostic_telemetry.json
-outputs/hitk.csv.telemetry.json
-```
-
-Each telemetry file records wall-clock elapsed time, command-line arguments, CPU count, Python/platform metadata, output paths, and script-specific counters such as block count, truncation horizon `Y`, number of models, summary rows, and whether the Oliver--Soundararajan diagnostic was executed.
-
-For a quick timing reference on a small smoke dataset:
-
-```bash
-python data_generation/generate_prime_gap_blocks.py --quick-test --output-dir data/quick_test
-python paper_audits/chl2_consecutive_exclusion_audit.py \
-  --config data/quick_test/config.generated.json \
-  --root . \
-  --blocks 1-2 \
-  --path-exclusion \
-  --workers 2 \
-  --parallel-mode auto \
-  --prime-csv AUTO \
-  --os-prime-mods 3,5,7 \
-  --output-dir outputs/quick_chl2
-```
-
-To produce telemetry for the Hit@K oracle, provide an output CSV or an explicit telemetry path:
-
-```bash
-python research_tools/chl2_hitk_oracle.py \
-  --p-current 1000003 \
-  --g-prev 6 \
-  --Y 47 \
-  --gmax 300 \
-  --top-k 20 \
-  --output-csv outputs/hitk.csv
 ```
 
 ## Importable kernel
@@ -222,8 +173,6 @@ but it has a documented wrong-sign failure in modulus 3. This low-wheel anomaly
 is treated as a boundary of the first-order approximation, not as a positive
 validation.
 
-The documented q=3 anomaly should not be treated as an unresolved implementation bug. A CHL3 low-wheel second-order cluster follow-up preserved hard Möbius zeros for inadmissible quintic configurations but did not remove the qualitative q=3 sign error. This supports the interpretation that the remaining binary low-wheel bias is a separate **direct modular-transfer** problem, not merely a no-interior survival correction.
-
 ## Citation
 
 Zenodo archive: https://doi.org/10.5281/zenodo.20368549
@@ -234,7 +183,7 @@ Zenodo archive: https://doi.org/10.5281/zenodo.20368549
   title     = {CHL-prime-gaps: Conditional Hardy--Littlewood Markov kernels for consecutive prime gaps},
   year      = {2026},
   publisher = {Zenodo},
-  version   = {v1.5},
+  version   = {v0.0},
   doi       = {10.5281/zenodo.20368549},
   url       = {https://doi.org/10.5281/zenodo.20368549},
 }

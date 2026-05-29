@@ -27,7 +27,6 @@ import csv
 import json
 import math
 import os
-import sys
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
@@ -35,12 +34,6 @@ from typing import Dict, Iterable, List, Tuple
 
 import numpy as np
 import pandas as pd
-
-# Allow execution as a file from a fresh clone without requiring pip install -e . first.
-_REPO_ROOT = Path(__file__).resolve().parents[1]
-if str(_REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT))
-from chl_kernel.telemetry import telemetry_start, write_telemetry
 
 
 def ensure_dir(path: Path) -> None:
@@ -205,9 +198,6 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    telemetry = telemetry_start()
-    telemetry["script"] = "generate_prime_gap_blocks"
-    telemetry["args"] = vars(args)
     if args.quick_test:
         args.start = 1_000_000
         args.end = 1_200_000
@@ -287,25 +277,6 @@ def main() -> None:
     }
     with (outdir / "config.generated.json").open("w", encoding="utf-8") as f:
         json.dump(cfg, f, indent=2)
-    write_telemetry(
-        outdir / "data_generation_telemetry.json",
-        telemetry,
-        output_dir=str(outdir),
-        start=int(start),
-        end=int(end),
-        sieve_low=int(sieve_low),
-        sieve_high=int(sieve_high),
-        workers=int(args.workers),
-        segment_size=int(args.segment_size),
-        segment_count=int(len(tasks)),
-        context_prime_count=int(len(primes)),
-        window_prime_count=int(((primes >= start) & (primes <= end)).sum()),
-        gmax=int(args.gmax),
-        num_blocks=int(args.num_blocks),
-        n_pairs_middle_prime_window=int(n_pairs),
-        raw_pairs_by_block=[int(x) for x in raw_counts],
-        block_files=[str(blocks_dir / f"parent_wide_B{b+1:02d}.csv.gz") for b in range(int(args.num_blocks))],
-    )
     print(f"[data_generation] complete. Config: {outdir/'config.generated.json'}", flush=True)
 
 

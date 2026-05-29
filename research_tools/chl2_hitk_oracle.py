@@ -25,7 +25,6 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from chl_kernel import CHLKernel, even_candidates, survives_actual_wheel
-from chl_kernel.telemetry import telemetry_start, write_telemetry
 
 
 def parse_args() -> argparse.Namespace:
@@ -37,15 +36,11 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--top-k", type=int, default=50)
     ap.add_argument("--no-actual-wheel-mask", action="store_true", help="Do not discard candidates divisible by small q <= Y at the actual p_n residue.")
     ap.add_argument("--output-csv", default=None)
-    ap.add_argument("--telemetry-json", default=None, help="Optional runtime telemetry JSON path. If omitted with --output-csv, writes <output>.telemetry.json.")
     return ap.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    telemetry = telemetry_start()
-    telemetry["script"] = "chl2_hitk_oracle"
-    telemetry["args"] = vars(args)
     log_x = math.log(float(args.p_current))
     kernel = CHLKernel(Y=args.Y, log_x=log_x)
     rows: List[dict] = []
@@ -81,26 +76,6 @@ def main() -> None:
         print(f"CHL2 Hit@K oracle: p_n={args.p_current}, g1={args.g_prev}, Y={args.Y}, gmax={args.gmax}")
         for i, r in enumerate(top, 1):
             print(f"{i:4d}  g2={r['g2']:5d}  candidate={r['candidate_n']}  cost={r['rank_cost']:.8g}  logR={r['log_R_Y']:.8g}  Omega={r['Omega_path']:.8g}")
-
-    telemetry_path = None
-    if args.telemetry_json:
-        telemetry_path = Path(args.telemetry_json)
-    elif args.output_csv:
-        telemetry_path = Path(args.output_csv).with_suffix(Path(args.output_csv).suffix + ".telemetry.json")
-    if telemetry_path is not None:
-        write_telemetry(
-            telemetry_path,
-            telemetry,
-            p_current=int(args.p_current),
-            g_prev=int(args.g_prev),
-            Y=int(args.Y),
-            gmax=int(args.gmax),
-            top_k=int(args.top_k),
-            candidate_count=int(len(rows)),
-            returned_count=int(len(top)),
-            used_actual_wheel_mask=not bool(args.no_actual_wheel_mask),
-            output_csv=str(args.output_csv) if args.output_csv else None,
-        )
 
 
 if __name__ == "__main__":
