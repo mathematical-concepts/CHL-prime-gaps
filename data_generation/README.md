@@ -26,3 +26,7 @@ python data_generation/generate_prime_gap_blocks.py \
   --workers 16 \
   --output-dir data/ds1_1e11_w2e9_g2400
 ```
+
+## Runtime telemetry
+
+Every successful run writes `data_generation_telemetry.json` in the output directory.  The file records wall-clock runtime, command-line arguments, CPU count, segment count, prime counts, block counts, and output paths.  It is a reproducibility aid only; it is not used by any CHL kernel or audit metric.

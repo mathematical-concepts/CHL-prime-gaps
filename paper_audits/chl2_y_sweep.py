@@ -24,6 +24,12 @@ from typing import List
 
 import pandas as pd
 
+# Allow execution as a file from a fresh clone without requiring pip install -e . first.
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+from chl_kernel.telemetry import telemetry_start, write_telemetry
+
 
 def parse_list(s: str) -> List[int]:
     out = []
@@ -60,6 +66,9 @@ def main() -> None:
     ap.add_argument("--reuse-existing", action="store_true", help="If a Y subdir already has chl2_conditional_summary.csv, do not rerun it.")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
+    telemetry = telemetry_start()
+    telemetry["script"] = "chl2_y_sweep"
+    telemetry["args"] = vars(args)
 
     script = Path(args.script) if args.script else Path(__file__).resolve().parent / "chl2_consecutive_exclusion_audit.py"
     if not script.exists():
@@ -196,6 +205,19 @@ def main() -> None:
     text.append("## Reading rule")
     text.append("Positive deltas over several Y horizons indicate that the improvement is not an artifact of a single truncation boundary. Oscillation or sign changes indicate a possible compression shadow and should be treated as a limitation rather than hidden post-hoc success.")
     (outdir / "chl2_y_sweep_interpretacion.md").write_text("\n".join(text), encoding="utf-8")
+    write_telemetry(
+        outdir / "chl2_y_sweep_telemetry.json",
+        telemetry,
+        output_dir=str(outdir),
+        script=str(script),
+        y_values=list(map(int, y_values)),
+        run_rows=len(run_rows),
+        summary_rows=int(len(all_summary)) if 'all_summary' in locals() else 0,
+        gain_rows=int(len(all_gains)) if 'all_gains' in locals() else 0,
+        stability_rows=int(len(stability)) if 'stability' in locals() else 0,
+        os_rows=int(len(all_os)) if 'all_os' in locals() and not all_os.empty else 0,
+        subdirs=[str(outdir / f"Y{Y}") for Y in y_values],
+    )
     print(f"[Y-sweep] wrote aggregate outputs to {outdir}")
 
 

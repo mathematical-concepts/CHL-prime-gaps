@@ -2,8 +2,9 @@
 
 This directory contains the current CHL2 whitepaper and supporting appendix material.
 
-- `CHL2_conditional_hardy_littlewood_markov_whitepaper_v1_4.pdf`: current repository/editorial final candidate.
-- `CHL2_conditional_hardy_littlewood_markov_whitepaper_v1_4.tex`: LaTeX source for the current candidate.
+- `CHL2_whitepaper_v1_5.pdf`: current final candidate.
+- `CHL2_whitepaper_v1_5.tex`: LaTeX source for the current final candidate.
+- `CHL2_whitepaper_v1_4.pdf` and `.tex`: previous stable release-candidate files retained for provenance.
 - `Appendix_A_q3_anomaly.md`: standalone explanation of the q=3 anomaly and first-order Poisson limitation.
 
-Older generated drafts may be retained in release archives, but `v1_4` is the default document for this repository snapshot.
+Version `v1_5` adds a negative-control remark on the experimental CHL3 low-wheel second-order cluster correction, clarifies that the q=3 anomaly points toward a separate direct modular-transfer problem, and documents the runtime-telemetry files written by the reproducibility scripts.
