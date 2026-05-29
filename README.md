@@ -91,7 +91,7 @@ python research_tools/chl2_hitk_oracle.py \
 
 ## DS1-style reproduction
 
-Generate empirical data around \(10^{11}\):
+Generate empirical data around $10^{11}$:
 
 ```bash
 python data_generation/generate_prime_gap_blocks.py \

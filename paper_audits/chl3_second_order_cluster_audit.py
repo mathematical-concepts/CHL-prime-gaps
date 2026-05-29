@@ -64,6 +64,127 @@ except Exception as exc:  # pragma: no cover - fail loudly for users
 from chl_kernel.primes import primes_upto
 
 
+
+
+# ---------------------------------------------------------------------------
+# Prime CSV resolution helpers
+# ---------------------------------------------------------------------------
+
+def _dedupe_paths(paths: Iterable[Path]) -> List[Path]:
+    """Deduplicate paths while preserving order."""
+    out: List[Path] = []
+    seen = set()
+    for path in paths:
+        if path is None:
+            continue
+        pp = Path(path)
+        key = str(pp)
+        if key not in seen:
+            out.append(pp)
+            seen.add(key)
+    return out
+
+
+def prime_csv_candidates(
+    prime_arg: Optional[str],
+    config: dict,
+    root: Path,
+    *,
+    config_path: Optional[Path] = None,
+) -> List[Path]:
+    """Return plausible chronological-prime CSV paths.
+
+    The stable CHL2 script has had several variants of ``resolve_prime_csv``
+    during the project.  The CHL3 experimental audit must not depend on a
+    private helper that may not exist in a user's checkout.  This resolver is
+    intentionally local and conservative.
+
+    ``--prime-csv AUTO`` searches common config keys and common generated-data
+    locations.  Explicit paths are also resolved relative to the current
+    working directory, the repository root argument, and the config directory.
+    """
+    if not prime_arg:
+        return []
+
+    root = Path(root)
+    config_path = Path(config_path) if config_path is not None else None
+    config_dir = config_path.parent if config_path is not None else Path.cwd()
+    input_dir = config.get("input_dir", "") or ""
+
+    candidates: List[Path] = []
+
+    def add_rel(value: str) -> None:
+        if value is None:
+            return
+        value = str(value).strip()
+        if not value:
+            return
+        path = Path(value)
+        if path.is_absolute():
+            candidates.append(path)
+        else:
+            candidates.extend([
+                path,
+                Path.cwd() / path,
+                root / path,
+                config_dir / path,
+                config_dir.parent / path,
+            ])
+            if input_dir:
+                candidates.extend([
+                    root / input_dir / path,
+                    config_dir / input_dir / path,
+                    config_dir.parent / input_dir / path,
+                ])
+
+    if str(prime_arg).upper() == "AUTO":
+        for key in (
+            "real_prime_sequence",
+            "prime_csv",
+            "prime_sequence",
+            "primes_csv",
+            "real_primes_csv",
+            "real_prime_csv",
+            "prime_file",
+        ):
+            val = config.get(key)
+            if val:
+                add_rel(str(val))
+
+        # Common filenames emitted by data_generation and by the earlier DS1
+        # pipeline.  These are candidates only; no recursive search is done.
+        for name in (
+            "real_primes.csv.gz",
+            "real_primes.csv",
+            "v46t12_ds1_real_primes.csv.gz",
+            "v46t12_ds1_real_primes.csv",
+        ):
+            add_rel(name)
+    else:
+        add_rel(str(prime_arg))
+
+    return _dedupe_paths(candidates)
+
+
+def resolve_prime_csv_local(
+    prime_arg: Optional[str],
+    config: dict,
+    root: Path,
+    *,
+    config_path: Optional[Path] = None,
+) -> Optional[Path]:
+    """Resolve a chronological-prime CSV path for the OS diagnostic.
+
+    Returns the first existing candidate.  If none exists, returns the first
+    candidate so that status JSON can show what path was attempted.
+    """
+    candidates = prime_csv_candidates(prime_arg, config, root, config_path=config_path)
+    for path in candidates:
+        if Path(path).exists():
+            return Path(path)
+    return candidates[0] if candidates else None
+
+
 # ---------------------------------------------------------------------------
 # Low-wheel second-order cluster cache
 # ---------------------------------------------------------------------------
@@ -215,8 +336,18 @@ def _omega_cluster_for_pair(g1: int, g2: int) -> Dict[str, float]:
             label = lowwheel_label(low)
             out[f"omega_lowwheel2_{label}"] = 0.0
             out[f"logE_lowwheel2_{label}"] = 0.0
+            out[f"omega_self_lowwheel2_{label}"] = 0.0
+            out[f"logE_self_lowwheel2_{label}"] = 0.0
+            out[f"self_term_{label}"] = 0.0
             out[f"kappa_sum_{label}"] = 0.0
             out[f"active_residue_pairs_{label}"] = 0.0
+            out[f"nonzero_h5_pairs_{label}"] = 0.0
+            out[f"hard_zero_h5_pairs_{label}"] = 0.0
+            out[f"hard_zero_h5_weight_{label}"] = 0.0
+            out[f"hard_zero_h5_kappa_mass_{label}"] = 0.0
+            out[f"kappa_negative_mass_{label}"] = 0.0
+            out[f"kappa_positive_mass_{label}"] = 0.0
+            out[f"skipped_zero_h4_pairs_{label}"] = 0.0
             out[f"M_low_{label}"] = float(math.prod(low) if low else 1)
         return out
 
@@ -253,78 +384,156 @@ def _omega_cluster_for_pair(g1: int, g2: int) -> Dict[str, float]:
     out["max_pu"] = float(max_p)
 
     # Low-wheel second-order cumulants.
+    #
+    # IMPORTANT CHL3/Möbius correction:
+    # The previous aggregate coupling used full-horizon p_u masses and a
+    # low-wheel coupling factor.  That captures some signal, but it dilutes the
+    # strict low-wheel hard zeros that are decisive in q=3.  Here the base
+    # CHL2 intensity omega1 remains full-horizon, while the cross-cumulant is
+    # computed exactly on the selected low wheel.  The sum is still exact over
+    # all interior pairs because low-wheel singular ratios depend only on the
+    # residues of u and v modulo M_low; we aggregate by residue classes rather
+    # than looping over O(g2^2) concrete pairs.
     for low in _WORKER_LOWWHEEL_SETS:
         label = lowwheel_label(low)
         if not low:
+            self_term = 0.5 * sum(p * p for p in p_by_u.values())
+            omega_self = omega1 + self_term
             out[f"omega_lowwheel2_{label}"] = float(omega1)
             out[f"logE_lowwheel2_{label}"] = -float(omega1)
+            out[f"omega_self_lowwheel2_{label}"] = float(omega_self)
+            out[f"logE_self_lowwheel2_{label}"] = -float(omega_self)
+            out[f"self_term_{label}"] = float(self_term)
             out[f"kappa_sum_{label}"] = 0.0
             out[f"active_residue_pairs_{label}"] = 0.0
+            out[f"nonzero_h5_pairs_{label}"] = 0.0
+            out[f"hard_zero_h5_pairs_{label}"] = 0.0
+            out[f"hard_zero_h5_weight_{label}"] = 0.0
+            out[f"hard_zero_h5_kappa_mass_{label}"] = 0.0
+            out[f"kappa_negative_mass_{label}"] = 0.0
+            out[f"kappa_positive_mass_{label}"] = 0.0
+            out[f"skipped_zero_h4_pairs_{label}"] = 0.0
             out[f"M_low_{label}"] = 1.0
+            out[f"mobius_low_pair_count_{label}"] = 0.0
+            out[f"mobius_low_kappa_method_{label}"] = 1.0
             continue
+
         M = 1
-        for p in low:
-            M *= int(p)
-        S = {r: 0.0 for r in range(M)}
-        Q = {r: 0.0 for r in range(M)}
-        for u, p_u in p_by_u.items():
-            r = int(u % M)
-            S[r] += p_u
-            Q[r] += p_u * p_u
+        for p_low in low:
+            M *= int(p_low)
 
         h3_res = (0 % M, g1 % M, (g1 + g2) % M)
-        s3 = lowwheel_singular_from_residues(h3_res, 3, low)
-        residues = [r for r in range(M) if S[r] != 0.0]
-        kappa_sum = 0.0
-        active_pairs = 0
-        hard_zero_h5_pairs = 0
-        hard_zero_h5_weight = 0.0
+        s3_low = lowwheel_singular_from_residues(h3_res, 3, low)
+
+        # Low-wheel interior intensities p_u^low and counts by residue.
+        # N counts the exact number of concrete interior offsets in each
+        # low-wheel residue.  S_low and Q_low are sums of p_u^low and
+        # (p_u^low)^2; these are sufficient to reconstruct exactly the sum over
+        # all unordered pairs u < v for any function depending only on residues.
+        N = {r: 0 for r in range(M)}
+        S_low = {r: 0.0 for r in range(M)}
+        Q_low = {r: 0.0 for r in range(M)}
         skipped_zero_h4_pairs = 0
-        if s3 > 0.0:
+
+        if s3_low > 0.0:
+            for u in offsets:
+                r = int(u % M)
+                N[r] += 1
+                h4_r = (0 % M, g1 % M, (g1 + r) % M, (g1 + g2) % M)
+                s4_r = lowwheel_singular_from_residues(h4_r, 4, low)
+                if s4_r <= 0.0:
+                    # Individual interior candidate inadmissible under the low
+                    # wheel.  Its p_u^low is zero, and it contributes no pair
+                    # covariance mass except through impossible H5 pairs, which
+                    # also have zero p_uv and zero p_u p_v.
+                    skipped_zero_h4_pairs += 1
+                    continue
+                p_low_u = inv_log * (s4_r / s3_low)
+                if p_low_u < 0.0 or not math.isfinite(p_low_u):
+                    p_low_u = 0.0
+                S_low[r] += p_low_u
+                Q_low[r] += p_low_u * p_low_u
+
+        residues = [r for r in range(M) if N[r] > 0]
+        kappa_sum = 0.0
+        active_pairs = 0.0
+        hard_zero_h5_pairs = 0.0
+        hard_zero_h5_weight = 0.0
+        hard_zero_h5_kappa_mass = 0.0
+        nonzero_h5_pairs = 0.0
+        kappa_negative_mass = 0.0
+        kappa_positive_mass = 0.0
+
+        if s3_low > 0.0:
+            inv_log2 = inv_log * inv_log
             for i, r in enumerate(residues):
-                for s in residues[i:]:
-                    if r != s:
-                        weight = S[r] * S[s]
+                for s_res in residues[i:]:
+                    if r != s_res:
+                        pair_count = float(N[r] * N[s_res])
+                        product_mass = S_low[r] * S_low[s_res]
                     else:
-                        # unordered pairs u < v in the same residue class
-                        weight = 0.5 * (S[r] * S[r] - Q[r])
-                    if weight <= 0.0:
-                        continue
-                    h4_r = (0 % M, g1 % M, (g1 + r) % M, (g1 + g2) % M)
-                    h4_s = (0 % M, g1 % M, (g1 + s) % M, (g1 + g2) % M)
-                    h5_rs = (0 % M, g1 % M, (g1 + r) % M, (g1 + s) % M, (g1 + g2) % M)
-                    s4_r = lowwheel_singular_from_residues(h4_r, 4, low)
-                    s4_s = lowwheel_singular_from_residues(h4_s, 4, low)
-                    if s4_r <= 0.0 or s4_s <= 0.0:
-                        # If a one-point interior extension is already low-wheel
-                        # inadmissible, its p_u contribution should already be
-                        # zero in S[r].  Keep this counter as a guardrail.
-                        skipped_zero_h4_pairs += 1
+                        pair_count = float(N[r] * (N[r] - 1) // 2)
+                        product_mass = 0.5 * (S_low[r] * S_low[r] - Q_low[r])
+
+                    if pair_count <= 0.0:
                         continue
 
-                    # Strict Möbius hard-zero layer: if H5 occupies every residue
-                    # class modulo any selected low prime, force S_low(H5)=0.
-                    # This preserves the absolute exclusion that is otherwise
-                    # easy to dilute in aggregate low-wheel approximations.
+                    h5_rs = (
+                        0 % M,
+                        g1 % M,
+                        (g1 + r) % M,
+                        (g1 + s_res) % M,
+                        (g1 + g2) % M,
+                    )
+
+                    # Strict low-wheel Möbius zero: if H5 covers every residue
+                    # class modulo any low prime, S_low(H5)=0 exactly.  Do not
+                    # skip this pair; it contributes -p_u p_v to the cumulant.
                     if lowwheel_is_inadmissible(h5_rs, low):
-                        coupling = 0.0
-                        hard_zero_h5_pairs += 1
-                        hard_zero_h5_weight += weight
+                        p_uv_low = 0.0
+                        hard_zero_h5_pairs += pair_count
+                        hard_zero_h5_weight += product_mass
+                        nonzero = False
                     else:
                         s5 = lowwheel_singular_from_residues(h5_rs, 5, low)
-                        coupling = (s5 * s3) / (s4_r * s4_s)
+                        p_uv_low = inv_log2 * (s5 / s3_low) if s5 > 0.0 else 0.0
+                        nonzero = p_uv_low > 0.0
+                        if nonzero:
+                            nonzero_h5_pairs += pair_count
 
-                    kappa_sum += weight * (coupling - 1.0)
-                    active_pairs += 1
+                    kappa_contrib = pair_count * p_uv_low - product_mass
+                    if not nonzero and product_mass > 0.0:
+                        hard_zero_h5_kappa_mass += kappa_contrib
+                    if kappa_contrib < 0.0:
+                        kappa_negative_mass += kappa_contrib
+                    elif kappa_contrib > 0.0:
+                        kappa_positive_mass += kappa_contrib
+                    kappa_sum += kappa_contrib
+                    active_pairs += pair_count
+
+        # Base self-interaction is still computed from the full-horizon p_u,
+        # because it corrects the Bernoulli self term of the CHL2 path intensity.
+        self_term = 0.5 * sum(p * p for p in p_by_u.values())
         omega2 = omega1 - kappa_sum
+        omega_self = omega1 + self_term - kappa_sum
         out[f"omega_lowwheel2_{label}"] = float(omega2)
         out[f"logE_lowwheel2_{label}"] = -float(omega2)
+        out[f"omega_self_lowwheel2_{label}"] = float(omega_self)
+        out[f"logE_self_lowwheel2_{label}"] = -float(omega_self)
+        out[f"self_term_{label}"] = float(self_term)
         out[f"kappa_sum_{label}"] = float(kappa_sum)
         out[f"active_residue_pairs_{label}"] = float(active_pairs)
+        out[f"nonzero_h5_pairs_{label}"] = float(nonzero_h5_pairs)
         out[f"hard_zero_h5_pairs_{label}"] = float(hard_zero_h5_pairs)
         out[f"hard_zero_h5_weight_{label}"] = float(hard_zero_h5_weight)
+        out[f"hard_zero_h5_kappa_mass_{label}"] = float(hard_zero_h5_kappa_mass)
+        out[f"kappa_negative_mass_{label}"] = float(kappa_negative_mass)
+        out[f"kappa_positive_mass_{label}"] = float(kappa_positive_mass)
         out[f"skipped_zero_h4_pairs_{label}"] = float(skipped_zero_h4_pairs)
         out[f"M_low_{label}"] = float(M)
+        out[f"mobius_low_pair_count_{label}"] = float(active_pairs)
+        out[f"mobius_low_kappa_method_{label}"] = 2.0
+
     return out
 
 
@@ -342,6 +551,33 @@ def _iter_chunks(seq: Sequence[Tuple[int, int]], chunk_size: int) -> Iterable[Li
     chunk_size = max(1, int(chunk_size))
     for i in range(0, len(seq), chunk_size):
         yield list(seq[i:i + chunk_size])
+
+
+def auto_cluster_chunk_size(
+    n_pairs: int,
+    workers: int,
+    requested_chunk_size: int,
+    target_tasks_per_worker: int = 6,
+    min_chunk_size: int = 32,
+    max_chunk_size: int = 512,
+) -> int:
+    """Choose a cluster-cache chunk size that keeps all workers busy.
+
+    The earlier experimental default used large chunks (for example 5000).
+    On B01 there are only about 6--7k unique pair states, so that default
+    creates only two tasks and leaves most CPU cores idle.  A requested
+    chunk size > 0 is respected exactly; requested_chunk_size <= 0 enables
+    automatic sizing.
+    """
+    n_pairs = int(max(0, n_pairs))
+    workers = int(max(1, workers))
+    if requested_chunk_size and int(requested_chunk_size) > 0:
+        return int(requested_chunk_size)
+    if n_pairs <= 0:
+        return 1
+    target_tasks = max(workers, workers * int(max(1, target_tasks_per_worker)))
+    chunk = int(math.ceil(n_pairs / target_tasks))
+    return int(max(min_chunk_size, min(max_chunk_size, chunk)))
 
 
 def collect_unique_pairs(block_files: Sequence[Tuple[int, Path]], source: str) -> pd.DataFrame:
@@ -365,12 +601,24 @@ def compute_cluster_cache_parallel(
     workers: int,
     chunk_size: int,
     cache_maxsize: int,
+    target_tasks_per_worker: int = 6,
 ) -> pd.DataFrame:
     pairs_df = pairs_df[["g1", "g2"]].drop_duplicates().sort_values(["g1", "g2"]).reset_index(drop=True)
     pairs = [(int(a), int(b)) for a, b in pairs_df[["g1", "g2"]].itertuples(index=False, name=None)]
-    tasks = [(i, chunk) for i, chunk in enumerate(_iter_chunks(pairs, chunk_size))]
     workers = max(1, int(workers))
-    print(f"[CHL3] unique pairs={len(pairs):,}; chunks={len(tasks):,}; workers={workers}; lowwheel={list(map(list, lowwheel_sets))}", flush=True)
+    effective_chunk_size = auto_cluster_chunk_size(
+        n_pairs=len(pairs),
+        workers=workers,
+        requested_chunk_size=int(chunk_size),
+        target_tasks_per_worker=int(target_tasks_per_worker),
+    )
+    tasks = [(i, chunk) for i, chunk in enumerate(_iter_chunks(pairs, effective_chunk_size))]
+    print(
+        f"[CHL3] unique pairs={len(pairs):,}; chunks={len(tasks):,}; "
+        f"workers={workers}; cluster_chunk_size={effective_chunk_size}; "
+        f"lowwheel={list(map(list, lowwheel_sets))}",
+        flush=True,
+    )
     t0 = time.time()
     results: List[Tuple[int, List[dict]]] = []
     if workers == 1:
@@ -432,8 +680,23 @@ def analyze_block_chl3(
 
     cache_cols = ["g1", "g2", "logE_chl2_path", "logE_bernoulli_path"]
     for low in lowwheel_sets:
-        cache_cols.append(f"logE_lowwheel2_{lowwheel_label(low)}")
-    cache_df = pd.read_csv(cluster_cache_file, usecols=lambda c: c in set(cache_cols) or c in {"omega_path_poisson", "omega_path_bernoulli"} or c.startswith("omega_lowwheel2_") or c.startswith("kappa_sum_") or c.startswith("active_residue_pairs_") or c in {"g1", "g2", "n_even_interior", "max_pu", "bernoulli_clipped_pu"})
+        label = lowwheel_label(low)
+        cache_cols.append(f"logE_lowwheel2_{label}")
+        cache_cols.append(f"logE_self_lowwheel2_{label}")
+    telemetry_prefixes = (
+        "omega_lowwheel2_", "omega_self_lowwheel2_", "self_term_",
+        "kappa_sum_", "active_residue_pairs_", "nonzero_h5_pairs_",
+        "hard_zero_h5_pairs_", "hard_zero_h5_weight_",
+        "hard_zero_h5_kappa_mass_", "kappa_negative_mass_",
+        "kappa_positive_mass_", "skipped_zero_h4_pairs_",
+    )
+    cache_df = pd.read_csv(
+        cluster_cache_file,
+        usecols=lambda c: c in set(cache_cols)
+        or c in {"omega_path_poisson", "omega_path_bernoulli"}
+        or c.startswith(telemetry_prefixes)
+        or c in {"g1", "g2", "n_even_interior", "max_pu", "bernoulli_clipped_pu"},
+    )
     df_all = df_all.merge(cache_df, on=["g1", "g2"], how="left")
     if df_all["logE_chl2_path"].isna().any():
         raise ValueError(f"Block {block}: missing cluster-cache rows after merge")
@@ -467,6 +730,10 @@ def analyze_block_chl3(
             col = f"logE_lowwheel2_{label}"
             logE_low = df[col].to_numpy(np.float64)
             evals.append(chl2.eval_conditional_model(df, np.where(adm3, log_ratio + logE_low, -np.inf), f"CHL3_lowwheel2_{label}_cond_eta", fname, block).__dict__)
+            self_col = f"logE_self_lowwheel2_{label}"
+            if self_col in df.columns:
+                logE_self = df[self_col].to_numpy(np.float64)
+                evals.append(chl2.eval_conditional_model(df, np.where(adm3, log_ratio + logE_self, -np.inf), f"CHL3_self_lowwheel2_{label}_cond_eta", fname, block).__dict__)
         evals.append(chl2.eval_conditional_model(df, np.where(adm3, log_ratio + logE_cramer, -np.inf), "CHL2_cramer_excl_cond_eta", fname, block).__dict__)
         evals.append(chl2.eval_conditional_model(df, np.where(adm3, zero_cond + logE_gap, -np.inf), "noPhi_gap_excl_cond_eta", fname, block).__dict__)
         evals.append(chl2.eval_conditional_model(df, zero_cond, "noPhi_cond_eta", fname, block).__dict__)
@@ -598,7 +865,9 @@ def build_chl3_kernel_mod_maps(
 
     cache_needed = ["g1", "g2", "logE_chl2_path", "logE_bernoulli_path"]
     for low in lowwheel_sets:
-        cache_needed.append(f"logE_lowwheel2_{lowwheel_label(low)}")
+        label = lowwheel_label(low)
+        cache_needed.append(f"logE_lowwheel2_{label}")
+        cache_needed.append(f"logE_self_lowwheel2_{label}")
     cache_df = pd.read_csv(cluster_cache_file, usecols=lambda c: c in set(cache_needed))
     df = df.merge(cache_df, on=["g1", "g2"], how="left")
     if df["logE_chl2_path"].isna().any():
@@ -623,6 +892,12 @@ def build_chl3_kernel_mod_maps(
         col = f"logE_lowwheel2_{label}"
         if col not in df.columns:
             raise ValueError(f"CHL3 model {model_name} requires missing cache column {col}")
+        log_base = np.where(adm3, log_ratio + df[col].to_numpy(np.float64), -np.inf)
+    elif model_name.startswith("CHL3_self_lowwheel2_") and model_name.endswith("_cond_eta"):
+        label = model_name[len("CHL3_self_lowwheel2_"):-len("_cond_eta")]
+        col = f"logE_self_lowwheel2_{label}"
+        if col not in df.columns:
+            raise ValueError(f"CHL3 self+cluster model {model_name} requires missing cache column {col}")
         log_base = np.where(adm3, log_ratio + df[col].to_numpy(np.float64), -np.inf)
     else:
         raise ValueError(f"Unsupported CHL3 OS model {model_name}")
@@ -845,6 +1120,257 @@ def run_os_prime_residue_test_chl3(
     return summary, matrix
 
 
+
+
+def run_os_prime_residue_test_chl3_multi(
+    prime_csv: Path,
+    block_files: Sequence[Tuple[int, Path]],
+    primes: Sequence[int],
+    log_x: float,
+    model_names: Sequence[str],
+    mods: Sequence[int],
+    residue_mode: str,
+    cluster_cache_file: Path,
+    lowwheel_sets: Sequence[Sequence[int]],
+    max_transitions: int,
+    chunksize: int,
+    outdir: Path,
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """Fast absolute prime-residue OS diagnostic for multiple models.
+
+    This is the performance-critical stage after the cluster cache has been
+    built.  The previous implementation streamed the prime CSV and updated the
+    model prediction one transition at a time, nested inside loops over
+    q, model, and gap residues.  That is intentionally simple but very slow and
+    appears CPU-light because much of the time is spent in Python iteration and
+    gzip I/O.
+
+    This implementation keeps the same mathematics and the same outputs, but
+    processes each prime chunk vectorially:
+
+    1. Build arrays of triples (p_{i-2}, p_{i-1}, p_i).
+    2. For each modulus q, group transitions by (g_prev, from_residue,
+       to_residue) using numpy.unique.
+    3. For each model, add observed counts and predicted rows by group count,
+       not event by event.
+
+    The expected count written to the matrix CSV is exactly
+
+        row_count * model_probability,
+
+    so the Pearson chi-square can be recomputed directly from the CSV.
+    """
+    if not prime_csv.exists():
+        raise FileNotFoundError(prime_csv)
+    model_names = [str(m) for m in model_names]
+    if not model_names:
+        raise ValueError("model_names cannot be empty")
+    mods = [int(q) for q in mods]
+
+    # Build model kernels once.
+    kernel_maps_by_model: Dict[str, Dict[int, Dict[int, np.ndarray]]] = {}
+    meta_by_model: Dict[str, Dict[str, float]] = {}
+    for model_name in model_names:
+        print(f"[CHL3-OS] building kernel maps for {model_name}", flush=True)
+        maps, meta = build_chl3_kernel_mod_maps(
+            block_files=block_files,
+            primes=primes,
+            log_x=log_x,
+            model_name=model_name,
+            mods=mods,
+            cluster_cache_file=cluster_cache_file,
+            lowwheel_sets=lowwheel_sets,
+        )
+        kernel_maps_by_model[model_name] = maps
+        meta_by_model[model_name] = meta
+
+    residues = {q: chl2.reduced_residues_for_mod(q, residue_mode) for q in mods}
+    row_index = {q: {r: i for i, r in enumerate(residues[q])} for q in mods}
+    dense_index: Dict[int, np.ndarray] = {}
+    for q in mods:
+        idx = np.full(q, -1, dtype=np.int16)
+        for i, r in enumerate(residues[q]):
+            idx[int(r) % q] = i
+        dense_index[q] = idx
+
+    # Precompute P(a | b, g_prev, model, q) as a row-stochastic matrix for
+    # every previous gap in the support.  This removes the innermost loop over
+    # gap residues from the prime-streaming stage.
+    transition_rows: Dict[str, Dict[int, Dict[int, np.ndarray]]] = {}
+    for model_name in model_names:
+        transition_rows[model_name] = {}
+        for q in mods:
+            n = len(residues[q])
+            transition_rows[model_name][q] = {}
+            for gp, km in kernel_maps_by_model[model_name].get(q, {}).items():
+                mat = np.zeros((n, n), dtype=np.float64)
+                for bi, b in enumerate(residues[q]):
+                    for d, prob in enumerate(km):
+                        if prob <= 0.0:
+                            continue
+                        j = row_index[q].get((int(b) + int(d)) % q)
+                        if j is not None:
+                            mat[bi, j] += float(prob)
+                transition_rows[model_name][q][int(gp)] = mat
+
+    counts = {
+        model: {q: np.zeros((len(residues[q]), len(residues[q])), dtype=np.float64) for q in mods}
+        for model in model_names
+    }
+    preds = {
+        model: {q: np.zeros_like(counts[model][q], dtype=np.float64) for q in mods}
+        for model in model_names
+    }
+    skipped_no_kernel = {model: Counter() for model in model_names}
+    skipped_residue = {model: Counter() for model in model_names}
+    used = {model: Counter() for model in model_names}
+
+    history = np.array([], dtype=np.int64)
+    total_transitions = 0
+    chunk_no = 0
+    t0 = time.time()
+    print(f"[CHL3-OS] vectorized streaming prime sequence: {prime_csv}", flush=True)
+    for vals in chl2.stream_prime_values(prime_csv, chunksize=chunksize):
+        vals_arr = np.asarray(vals, dtype=np.int64)
+        if vals_arr.size == 0:
+            continue
+        arr = np.concatenate([history, vals_arr]) if history.size else vals_arr
+        if arr.size < 3:
+            history = arr[-2:].copy()
+            continue
+
+        prevprev_arr = arr[:-2]
+        prev_arr = arr[1:-1]
+        cur_arr = arr[2:]
+        g_prev_arr = prev_arr - prevprev_arr
+
+        if max_transitions:
+            remaining = int(max_transitions) - int(total_transitions)
+            if remaining <= 0:
+                break
+            if g_prev_arr.size > remaining:
+                prev_arr = prev_arr[:remaining]
+                cur_arr = cur_arr[:remaining]
+                g_prev_arr = g_prev_arr[:remaining]
+
+        n_events = int(g_prev_arr.size)
+        if n_events <= 0:
+            history = arr[-2:].copy()
+            continue
+
+        for q in mods:
+            n = len(residues[q])
+            if n == 0:
+                continue
+            bi_all = dense_index[q][np.mod(prev_arr, q)]
+            ai_all = dense_index[q][np.mod(cur_arr, q)]
+            valid = (bi_all >= 0) & (ai_all >= 0)
+            invalid = int(n_events - int(valid.sum()))
+            if invalid:
+                for model in model_names:
+                    skipped_residue[model][q] += invalid
+            if not np.any(valid):
+                continue
+
+            g_valid = g_prev_arr[valid].astype(np.int64, copy=False)
+            bi_valid = bi_all[valid].astype(np.int64, copy=False)
+            ai_valid = ai_all[valid].astype(np.int64, copy=False)
+
+            # Encode (g_prev, bi, ai) in a single int64 key.
+            key = g_valid * (n * n) + bi_valid * n + ai_valid
+            uniq, freq = np.unique(key, return_counts=True)
+
+            decoded_gp = uniq // (n * n)
+            rem = uniq - decoded_gp * (n * n)
+            decoded_bi = rem // n
+            decoded_ai = rem - decoded_bi * n
+
+            for model in model_names:
+                row_cache = transition_rows[model][q]
+                for gp, bi, ai, cnt in zip(decoded_gp, decoded_bi, decoded_ai, freq):
+                    mat = row_cache.get(int(gp))
+                    if mat is None:
+                        skipped_no_kernel[model][q] += int(cnt)
+                        continue
+                    c = float(cnt)
+                    counts[model][q][int(bi), int(ai)] += c
+                    preds[model][q][int(bi), :] += c * mat[int(bi), :]
+                    used[model][q] += int(cnt)
+
+        total_transitions += n_events
+        chunk_no += 1
+        if chunk_no % 5 == 0:
+            elapsed = time.time() - t0
+            rate = total_transitions / elapsed if elapsed > 0 else 0.0
+            print(f"[CHL3-OS] streamed {total_transitions:,} transitions in {elapsed:.1f}s ({rate:,.0f}/s)", flush=True)
+
+        history = arr[-2:].copy()
+        if max_transitions and total_transitions >= int(max_transitions):
+            break
+
+    rows = []
+    matrix_rows = []
+    for model_name in model_names:
+        for q in mods:
+            emp, row_counts = chl2.normalize_rows_from_counts(counts[model_name][q])
+            pred, _pred_row_counts = chl2.normalize_rows_from_counts(preds[model_name][q])
+            chi = pearson_chi_square_fast(counts[model_name][q], preds[model_name][q], row_counts=row_counts)
+            rc = chl2.row_cosine_weighted(emp, pred, row_counts)
+            kl = chl2.matrix_kl_weighted(emp, pred, row_counts)
+            l1 = 0.0
+            total = float(row_counts.sum())
+            if total > 0:
+                for i in range(emp.shape[0]):
+                    l1 += (row_counts[i] / total) * float(np.sum(np.abs(emp[i] - pred[i])))
+            sg_emp = chl2.spectral_gap_row_stochastic(emp)
+            sg_pred = chl2.spectral_gap_row_stochastic(pred)
+            diag_emp = float(np.average(np.diag(emp), weights=row_counts)) if row_counts.sum() > 0 else float("nan")
+            diag_pred = float(np.average(np.diag(pred), weights=row_counts)) if row_counts.sum() > 0 else float("nan")
+            uniform_diag = 1.0 / len(residues[q]) if residues[q] else float("nan")
+            wrong_sign = False
+            if np.isfinite(diag_emp) and np.isfinite(diag_pred) and np.isfinite(uniform_diag):
+                wrong_sign = (diag_emp - uniform_diag) * (diag_pred - uniform_diag) < 0
+            row = {
+                "q": q,
+                "model": model_name,
+                "residue_mode": residue_mode,
+                "n_used_transitions": int(used[model_name][q]),
+                "skipped_no_kernel": int(skipped_no_kernel[model_name][q]),
+                "skipped_residue": int(skipped_residue[model_name][q]),
+                "row_cosine_weighted": rc,
+                "weighted_KL_empirical_to_model": kl,
+                "weighted_L1": float(l1),
+                "spectral_gap_empirical": sg_emp,
+                "spectral_gap_model": sg_pred,
+                "spectral_gap_abs_error": abs(sg_emp - sg_pred) if np.isfinite(sg_emp) and np.isfinite(sg_pred) else float("nan"),
+                "diagonal_probability_empirical": diag_emp,
+                "diagonal_probability_model": diag_pred,
+                "uniform_diagonal_probability": uniform_diag,
+                "diagonal_wrong_sign_vs_uniform": bool(wrong_sign),
+            }
+            row.update(chi)
+            row.update({f"kernel_{k}": v for k, v in meta_by_model[model_name].items()})
+            rows.append(row)
+            for i, b in enumerate(residues[q]):
+                for j, a in enumerate(residues[q]):
+                    matrix_rows.append({
+                        "q": q,
+                        "model": model_name,
+                        "from_residue_b": b,
+                        "to_residue_a": a,
+                        "observed_count": counts[model_name][q][i, j],
+                        "expected_count_model": row_counts[i] * pred[i, j],
+                        "empirical_probability": emp[i, j],
+                        "model_probability": pred[i, j],
+                        "row_count": row_counts[i],
+                    })
+    summary = pd.DataFrame(rows)
+    matrix = pd.DataFrame(matrix_rows)
+    summary.to_csv(outdir / "chl3_os_prime_residue_summary.csv", index=False)
+    matrix.to_csv(outdir / "chl3_os_prime_residue_transition_by_mod.csv", index=False)
+    return summary, matrix
+
+
 def q3_diagnostic_from_os(os_summary: Optional[pd.DataFrame]) -> pd.DataFrame:
     if os_summary is None or os_summary.empty:
         return pd.DataFrame()
@@ -879,6 +1405,26 @@ def resolve_cluster_cache_path(outdir: Path, Y: int, log_x: float, lowwheel_sets
     return outdir / f"chl3_cluster_cache_Y{Y}_logx{int(round(log_x * 1_000_000))}_{labels}.csv.gz"
 
 
+
+
+def expand_os_model_names(os_models_arg: str, os_model_arg: str, lowwheel_sets: Sequence[Sequence[int]]) -> List[str]:
+    """Resolve OS model arguments to an explicit list."""
+    default_primary = "CHL3_lowwheel2_p3_cond_eta" if (3,) in lowwheel_sets else f"CHL3_lowwheel2_{lowwheel_label(lowwheel_sets[0])}_cond_eta"
+    all_models = [
+        "CHL2_path_excl_cond_eta",
+        "CHL2_bernoulli_path_cond_eta",
+        *[f"CHL3_lowwheel2_{lowwheel_label(s)}_cond_eta" for s in lowwheel_sets],
+        *[f"CHL3_self_lowwheel2_{lowwheel_label(s)}_cond_eta" for s in lowwheel_sets],
+    ]
+    arg = str(os_models_arg or "").strip()
+    if arg:
+        if arg.lower() == "all":
+            return all_models
+        return [x.strip() for x in arg.split(",") if x.strip()]
+    if str(os_model_arg).strip().lower() == "auto":
+        return [default_primary]
+    return [str(os_model_arg).strip()]
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="CHL3 second-order low-wheel cluster audit")
     ap.add_argument("--config", required=True, help="Path to generated/config JSON")
@@ -891,14 +1437,16 @@ def main() -> None:
     ap.add_argument("--lowwheel-sets", default="3;3,5;3,5,7", help="Semicolon-separated low-wheel sets, e.g. '3;3,5;3,5,7'")
     ap.add_argument("--workers", type=int, default=max(1, (os.cpu_count() or 2) - 1), help="Number of workers; 0 means all cores")
     ap.add_argument("--parallel-mode", choices=["auto", "blocks", "cluster", "none"], default="auto")
-    ap.add_argument("--cluster-chunk-size", type=int, default=5000)
+    ap.add_argument("--cluster-chunk-size", type=int, default=0, help="Cluster-cache chunk size; 0 enables automatic sizing to keep workers busy")
+    ap.add_argument("--cluster-target-tasks-per-worker", type=int, default=6, help="Automatic cluster chunks target tasks per worker")
     ap.add_argument("--cache-maxsize", type=int, default=2_000_000)
     ap.add_argument("--cluster-cache-file", default=None)
     ap.add_argument("--cluster-cache-source", choices=["first", "all"], default="all")
     ap.add_argument("--reuse-cluster-cache", action="store_true")
     ap.add_argument("--prime-csv", default=None, help="Chronological prime CSV for absolute OS test; AUTO reads config real_prime_sequence")
     ap.add_argument("--os-prime-mods", default="3,5,7")
-    ap.add_argument("--os-model", default="auto", help="Default auto uses CHL3_lowwheel2_p3_cond_eta")
+    ap.add_argument("--os-model", default="auto", help="Backward-compatible single OS model; default auto uses CHL3_lowwheel2_p3_cond_eta")
+    ap.add_argument("--os-models", default="", help="Comma-separated OS models, or 'all' for CHL2/CHL3 main candidates. Overrides --os-model when provided.")
     ap.add_argument("--os-residue-mode", choices=["reduced", "all"], default="reduced")
     ap.add_argument("--os-max-transitions", type=int, default=0)
     ap.add_argument("--os-prime-chunksize", type=int, default=1_000_000)
@@ -963,6 +1511,7 @@ def main() -> None:
             workers=cluster_workers,
             chunk_size=int(args.cluster_chunk_size),
             cache_maxsize=int(args.cache_maxsize),
+            target_tasks_per_worker=int(args.cluster_target_tasks_per_worker),
         )
         cluster_cache_path.parent.mkdir(parents=True, exist_ok=True)
         cache_df.to_csv(cluster_cache_path, index=False)
@@ -973,6 +1522,7 @@ def main() -> None:
         "CHL2_path_excl_cond_eta",
         "CHL2_bernoulli_path_cond_eta",
         *[f"CHL3_lowwheel2_{lowwheel_label(s)}_cond_eta" for s in lowwheel_sets],
+        *[f"CHL3_self_lowwheel2_{lowwheel_label(s)}_cond_eta" for s in lowwheel_sets],
         "CHL2_gap_excl_cond_eta",
         "CHL1_ratio_only_cond_eta",
         "CHL2_cramer_excl_cond_eta",
@@ -1011,17 +1561,18 @@ def main() -> None:
 
     # OS-only mode.
     def resolve_prime_path() -> Optional[Path]:
-        return chl2.resolve_prime_csv(args.prime_csv, config, root, config_path=config_path) if args.prime_csv else None
+        return resolve_prime_csv_local(args.prime_csv, config, root, config_path=config_path) if args.prime_csv else None
 
     os_summary: Optional[pd.DataFrame] = None
     os_status = {
         "requested": bool(args.prime_csv),
         "prime_arg": args.prime_csv,
         "resolved_prime_csv": None,
-        "candidate_prime_csv_paths": [str(x) for x in chl2.prime_csv_candidates(args.prime_csv, config, root, config_path=config_path)] if args.prime_csv else [],
+        "candidate_prime_csv_paths": [str(x) for x in prime_csv_candidates(args.prime_csv, config, root, config_path=config_path)] if args.prime_csv else [],
         "ran": False,
         "skip_reason": None,
         "model": None,
+        "model_names": None,
         "mods": [int(x.strip()) for x in str(args.os_prime_mods).split(",") if x.strip()],
         "summary_csv": None,
         "matrix_csv": None,
@@ -1041,24 +1592,39 @@ def main() -> None:
             if args.require_os:
                 raise RuntimeError(os_status["skip_reason"])
             return None
-        os_model = args.os_model
-        if os_model == "auto":
-            os_model = "CHL3_lowwheel2_p3_cond_eta" if (3,) in lowwheel_sets else f"CHL3_lowwheel2_{lowwheel_label(lowwheel_sets[0])}_cond_eta"
-        os_status["model"] = os_model
-        summary, _matrix = run_os_prime_residue_test_chl3(
-            prime_csv=prime_path,
-            block_files=block_files,
-            primes=primes,
-            log_x=log_x,
-            model_name=os_model,
-            mods=os_status["mods"],
-            residue_mode=args.os_residue_mode,
-            cluster_cache_file=cluster_cache_path,
-            lowwheel_sets=lowwheel_sets,
-            max_transitions=int(args.os_max_transitions),
-            chunksize=int(args.os_prime_chunksize),
-            outdir=outdir,
-        )
+        os_model_names = expand_os_model_names(args.os_models, args.os_model, lowwheel_sets)
+        os_status["model"] = os_model_names[0] if len(os_model_names) == 1 else "MULTI"
+        os_status["model_names"] = os_model_names
+        if len(os_model_names) == 1:
+            summary, _matrix = run_os_prime_residue_test_chl3(
+                prime_csv=prime_path,
+                block_files=block_files,
+                primes=primes,
+                log_x=log_x,
+                model_name=os_model_names[0],
+                mods=os_status["mods"],
+                residue_mode=args.os_residue_mode,
+                cluster_cache_file=cluster_cache_path,
+                lowwheel_sets=lowwheel_sets,
+                max_transitions=int(args.os_max_transitions),
+                chunksize=int(args.os_prime_chunksize),
+                outdir=outdir,
+            )
+        else:
+            summary, _matrix = run_os_prime_residue_test_chl3_multi(
+                prime_csv=prime_path,
+                block_files=block_files,
+                primes=primes,
+                log_x=log_x,
+                model_names=os_model_names,
+                mods=os_status["mods"],
+                residue_mode=args.os_residue_mode,
+                cluster_cache_file=cluster_cache_path,
+                lowwheel_sets=lowwheel_sets,
+                max_transitions=int(args.os_max_transitions),
+                chunksize=int(args.os_prime_chunksize),
+                outdir=outdir,
+            )
         os_status["ran"] = True
         os_status["summary_csv"] = str(outdir / "chl3_os_prime_residue_summary.csv")
         os_status["matrix_csv"] = str(outdir / "chl3_os_prime_residue_transition_by_mod.csv")
@@ -1108,7 +1674,11 @@ def main() -> None:
     summary.to_csv(outdir / "chl3_conditional_summary.csv", index=False)
     gains = pairwise_gains_chl3(summary)
     gains.to_csv(outdir / "chl3_pairwise_gains.csv", index=False)
-    main_models = ["CHL2_path_excl_cond_eta", "CHL2_bernoulli_path_cond_eta"] + [f"CHL3_lowwheel2_{lowwheel_label(s)}_cond_eta" for s in lowwheel_sets]
+    main_models = (
+        ["CHL2_path_excl_cond_eta", "CHL2_bernoulli_path_cond_eta"]
+        + [f"CHL3_lowwheel2_{lowwheel_label(s)}_cond_eta" for s in lowwheel_sets]
+        + [f"CHL3_self_lowwheel2_{lowwheel_label(s)}_cond_eta" for s in lowwheel_sets]
+    )
     mem = memory_irreducibility_multi(block_df, main_models)
     if not mem.empty:
         mem.to_csv(outdir / "chl3_memory_irreducibility.csv", index=False)
@@ -1123,6 +1693,19 @@ def main() -> None:
         cache_rows = int(sum(len(chunk) for chunk in pd.read_csv(cluster_cache_path, usecols=["g1"], chunksize=1_000_000)))
     except Exception:
         cache_rows = -1
+    cache_column_means: Dict[str, float] = {}
+    try:
+        telemetry_cols = [
+            c for c in pd.read_csv(cluster_cache_path, nrows=0).columns
+            if c.startswith(("hard_zero_h5_", "kappa_negative_mass_", "kappa_positive_mass_", "kappa_sum_", "self_term_", "omega_lowwheel2_", "omega_self_lowwheel2_"))
+        ]
+        if telemetry_cols:
+            tele_df = pd.read_csv(cluster_cache_path, usecols=telemetry_cols)
+            cache_column_means = {f"mean_{c}": float(tele_df[c].mean()) for c in telemetry_cols if pd.api.types.is_numeric_dtype(tele_df[c])}
+            cache_column_means.update({f"sum_{c}": float(tele_df[c].sum()) for c in telemetry_cols if c.startswith(("hard_zero_h5_", "kappa_negative_mass_", "kappa_positive_mass_")) and pd.api.types.is_numeric_dtype(tele_df[c])})
+    except Exception as exc:
+        cache_column_means = {"telemetry_read_error": str(exc)}
+
     telemetry = {
         "Y": Y,
         "lowwheel_sets": [list(s) for s in lowwheel_sets],
@@ -1135,6 +1718,8 @@ def main() -> None:
         "models": model_list,
         "os_ran": bool(os_status.get("ran")),
         "os_model": os_status.get("model"),
+        "os_model_names": os_status.get("model_names"),
+        "cluster_cache_column_means_and_sums": cache_column_means,
     }
     with open(outdir / "chl3_cluster_telemetry.json", "w", encoding="utf-8") as f:
         json.dump(telemetry, f, indent=2)

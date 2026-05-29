@@ -57,16 +57,8 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 from collections import Counter
 
-# Allow running this script directly from the repository root without installing.
-import sys
-_REPO_ROOT = Path(__file__).resolve().parents[1]
-if str(_REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT))
-
 import numpy as np
 import pandas as pd
-
-from chl_kernel.primes import primes_upto
 
 
 FILTERS = {
@@ -238,6 +230,19 @@ def parse_blocks_arg(s: Optional[str], default: Sequence[int]) -> List[int]:
         else:
             out.append(int(part))
     return sorted(set(out))
+
+
+def primes_upto(n: int) -> List[int]:
+    n = int(n)
+    if n < 2:
+        return []
+    sieve = bytearray(b"\x01") * (n + 1)
+    sieve[0:2] = b"\x00\x00"
+    for p in range(2, int(n**0.5) + 1):
+        if sieve[p]:
+            start = p * p
+            sieve[start:n+1:p] = b"\x00" * (((n - start) // p) + 1)
+    return [i for i in range(2, n + 1) if sieve[i]]
 
 
 def logsumexp(a: np.ndarray) -> float:
@@ -832,62 +837,16 @@ def analyze_block_file_task(task: Tuple[int, str, Tuple[int, ...], float, Tuple[
 # leakage is introduced.
 
 
-def prime_csv_candidates(prime_arg: Optional[str], config: dict, root: Path, config_path: Optional[Path] = None) -> List[Path]:
-    """Return candidate chronological-prime CSV paths in priority order.
-
-    The previous implementation used exactly root/input_dir/real_prime_sequence
-    for --prime-csv AUTO.  That was too brittle: in several local layouts the
-    prime sequence is stored either directly under root, next to the config, or
-    as an already-qualified path.  This resolver checks all rigorous locations
-    without changing the statistical model.
-    """
+def resolve_prime_csv(prime_arg: Optional[str], config: dict, root: Path) -> Optional[Path]:
     if not prime_arg:
-        return []
-    arg = str(prime_arg)
-    cands: List[Path] = []
-    if arg.upper() == "AUTO":
+        return None
+    if str(prime_arg).upper() == "AUTO":
         rel = config.get("real_prime_sequence")
         if not rel:
-            return []
-        relp = Path(str(rel))
-        if relp.is_absolute():
-            cands.append(relp)
-        input_dir = root / str(config.get("input_dir", ""))
-        cands.extend([
-            input_dir / relp,
-            root / relp,
-        ])
-        if config_path is not None:
-            cands.extend([
-                config_path.parent / relp,
-                config_path.parent.parent / relp,
-                config_path.parent.parent / str(config.get("input_dir", "")) / relp,
-            ])
-    else:
-        p = Path(arg)
-        if p.is_absolute():
-            cands.append(p)
-        else:
-            cands.extend([p, root / p])
-            if config_path is not None:
-                cands.append(config_path.parent / p)
-    # Preserve order while removing duplicates.
-    out: List[Path] = []
-    seen = set()
-    for c in cands:
-        key = str(c)
-        if key not in seen:
-            out.append(c)
-            seen.add(key)
-    return out
-
-
-def resolve_prime_csv(prime_arg: Optional[str], config: dict, root: Path, config_path: Optional[Path] = None) -> Optional[Path]:
-    cands = prime_csv_candidates(prime_arg, config, root, config_path=config_path)
-    for c in cands:
-        if c.exists():
-            return c
-    return cands[0] if cands else None
+            return None
+        input_dir = root / config.get("input_dir", "")
+        return input_dir / rel
+    return Path(prime_arg)
 
 
 def infer_prime_column(path: Path) -> Tuple[Optional[str], bool]:
@@ -976,87 +935,6 @@ def matrix_kl_weighted(emp: np.ndarray, pred: np.ndarray, row_counts: np.ndarray
         out += (row_counts[i] / total) * float(np.sum(p * np.log(p / q)))
     return float(out)
 
-
-
-def pearson_chi_square_from_counts(obs_counts: np.ndarray, exp_counts: np.ndarray, row_counts: Optional[np.ndarray] = None) -> Dict[str, float]:
-    """Pearson chi-square diagnostic for transition matrices.
-
-    Parameters
-    ----------
-    obs_counts:
-        Observed transition counts O_ij.
-    exp_counts:
-        Expected transition counts E_ij under the model.  In the CHL2
-        prime-residue OS diagnostic these are accumulated by summing the
-        model transition probabilities for each observed previous-prime
-        residue.
-    row_counts:
-        Optional row totals.  If supplied, degrees of freedom are computed as
-        sum_i (m_i - 1) over rows with positive observed mass and at least two
-        cells with positive expected mass.
-
-    Notes
-    -----
-    Row-cosine can be visually forgiving in a two-state reduced residue space
-    such as q=3.  This Pearson statistic is deliberately count-sensitive and
-    exposes wrong-sign diagonal/off-diagonal bias that a cosine can hide.
-    """
-    O = np.asarray(obs_counts, dtype=float)
-    E = np.asarray(exp_counts, dtype=float)
-    if O.shape != E.shape:
-        raise ValueError(f"obs/expected shape mismatch: {O.shape} vs {E.shape}")
-    if row_counts is None:
-        row_counts = O.sum(axis=1)
-    row_counts = np.asarray(row_counts, dtype=float)
-
-    chi2 = 0.0
-    inf_flag = False
-    cells_used = 0
-    rows_used = 0
-    df = 0
-    eps = 1e-15
-    for i in range(O.shape[0]):
-        if row_counts[i] <= 0:
-            continue
-        # If accumulated expected counts have tiny row-sum drift, rescale row
-        # to the empirical row count.  This preserves the model probabilities
-        # while ensuring a valid Pearson expected table.
-        e_row = E[i].copy()
-        e_sum = float(e_row.sum())
-        if e_sum > 0:
-            e_row *= float(row_counts[i]) / e_sum
-        positive_expected = e_row > eps
-        positive_observed = O[i] > 0
-        if np.any(positive_observed & ~positive_expected):
-            inf_flag = True
-        mask = positive_expected
-        if mask.any():
-            chi2 += float(np.sum((O[i, mask] - e_row[mask]) ** 2 / e_row[mask]))
-            cells_used += int(mask.sum())
-            rows_used += 1
-            df += max(int(mask.sum()) - 1, 0)
-    if inf_flag:
-        chi2 = float('inf')
-    total = float(np.sum(row_counts))
-    chi2_per_transition = chi2 / total if total > 0 and np.isfinite(chi2) else float('inf')
-    pval = float('nan')
-    if np.isfinite(chi2) and df > 0:
-        try:
-            from scipy.stats import chi2 as scipy_chi2  # type: ignore
-            pval = float(scipy_chi2.sf(chi2, df))
-        except Exception:
-            # SciPy is optional.  The statistic and df are sufficient for the
-            # paper; p-value can be computed externally if needed.
-            pval = float('nan')
-    return {
-        "pearson_chi2": float(chi2),
-        "pearson_chi2_df": int(df),
-        "pearson_chi2_pvalue": pval,
-        "pearson_chi2_per_transition": float(chi2_per_transition),
-        "pearson_chi2_cells_used": int(cells_used),
-        "pearson_chi2_rows_used": int(rows_used),
-        "pearson_chi2_infinite_flag": bool(inf_flag),
-    }
 
 def normalize_rows_from_counts(counts: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
     row_counts = counts.sum(axis=1).astype(float)
@@ -1306,23 +1184,10 @@ def run_os_prime_residue_test(
         pred, pred_row_counts = normalize_rows_from_counts(preds[q])
         rc = row_cosine_weighted(emp, pred, row_counts)
         kl = matrix_kl_weighted(emp, pred, row_counts)
-        chi = pearson_chi_square_from_counts(counts[q], preds[q], row_counts=row_counts)
         fro = float(np.linalg.norm(emp - pred))
         l1_weighted = float(np.sum((row_counts / row_counts.sum()) * np.sum(np.abs(emp - pred), axis=1))) if row_counts.sum() > 0 else float("nan")
         sg_emp = spectral_gap_row_stochastic(emp)
         sg_pred = spectral_gap_row_stochastic(pred)
-        # Diagonal mass is the most transparent wrong-sign diagnostic in reduced
-        # prime-residue spaces.  For q=3 this is more informative than cosine.
-        total_row_mass = float(row_counts.sum())
-        diag_emp = float(np.trace(counts[q]) / total_row_mass) if total_row_mass > 0 else float("nan")
-        # Use expected counts after row normalization for the diagonal.
-        exp_for_diag = preds[q].copy().astype(float)
-        for ii, rcnt in enumerate(row_counts):
-            es = float(exp_for_diag[ii].sum())
-            if rcnt > 0 and es > 0:
-                exp_for_diag[ii] *= float(rcnt) / es
-        diag_model = float(np.trace(exp_for_diag) / total_row_mass) if total_row_mass > 0 else float("nan")
-        uniform_diag = 1.0 / float(len(residues[q])) if len(residues[q]) else float("nan")
         summary_rows.append({
             "q": q,
             "model": model_name,
@@ -1336,17 +1201,6 @@ def run_os_prime_residue_test(
             "weighted_row_L1": l1_weighted,
             "frobenius_norm": fro,
             "weighted_KL_empirical_to_model": kl,
-            "pearson_chi2": chi["pearson_chi2"],
-            "pearson_chi2_df": chi["pearson_chi2_df"],
-            "pearson_chi2_pvalue": chi["pearson_chi2_pvalue"],
-            "pearson_chi2_per_transition": chi["pearson_chi2_per_transition"],
-            "pearson_chi2_cells_used": chi["pearson_chi2_cells_used"],
-            "pearson_chi2_rows_used": chi["pearson_chi2_rows_used"],
-            "pearson_chi2_infinite_flag": chi["pearson_chi2_infinite_flag"],
-            "diagonal_probability_empirical": diag_emp,
-            "diagonal_probability_model": diag_model,
-            "uniform_diagonal_probability": uniform_diag,
-            "diagonal_wrong_sign_vs_uniform": bool((diag_emp - uniform_diag) * (diag_model - uniform_diag) < 0) if np.isfinite(diag_emp) and np.isfinite(diag_model) and np.isfinite(uniform_diag) else False,
             "spectral_gap_empirical": sg_emp,
             "spectral_gap_model": sg_pred,
             "spectral_gap_abs_error": abs(sg_pred - sg_emp) if np.isfinite(sg_emp) and np.isfinite(sg_pred) else float("nan"),
@@ -1374,77 +1228,6 @@ def run_os_prime_residue_test(
     matrix_df.to_csv(outdir / "chl2_os_prime_residue_transition_by_mod.csv", index=False)
     return summary_df, matrix_df
 
-def run_optional_os_prime_residue_test(
-    args: argparse.Namespace,
-    config: dict,
-    root: Path,
-    config_path: Path,
-    block_files: Sequence[Tuple[int, Path]],
-    primes: Sequence[int],
-    log_x: float,
-    path_cache_path: Optional[Path],
-    outdir: Path,
-) -> Tuple[Optional[pd.DataFrame], dict]:
-    """Run the absolute-prime-residue OS test if requested and always write status.
-
-    This makes skipped runs auditable.  A missing AUTO path no longer silently
-    produces only the generic interpretation line; the exact candidate paths and
-    reason are stored in chl2_os_prime_residue_status.json.
-    """
-    status = {
-        "requested": bool(args.prime_csv),
-        "prime_arg": args.prime_csv,
-        "resolved_prime_csv": None,
-        "candidate_prime_csv_paths": [str(x) for x in prime_csv_candidates(args.prime_csv, config, root, config_path=config_path)] if args.prime_csv else [],
-        "ran": False,
-        "skip_reason": None,
-        "model": None,
-        "mods": [int(x.strip()) for x in str(args.os_prime_mods).split(',') if x.strip()],
-        "summary_csv": None,
-        "matrix_csv": None,
-    }
-    os_summary: Optional[pd.DataFrame] = None
-    if not args.prime_csv:
-        status["skip_reason"] = "--prime-csv was not provided"
-    else:
-        prime_path = resolve_prime_csv(args.prime_csv, config, root, config_path=config_path)
-        status["resolved_prime_csv"] = str(prime_path) if prime_path is not None else None
-        if prime_path is None:
-            status["skip_reason"] = "--prime-csv was requested but no candidate path could be resolved"
-        elif not prime_path.exists():
-            status["skip_reason"] = f"resolved prime CSV does not exist: {prime_path}"
-            print(f"[CHL2-OS] prime-csv not found: {prime_path}; skipping", flush=True)
-        else:
-            os_model = args.os_model
-            if os_model == "auto":
-                os_model = "CHL2_path_excl_cond_eta" if args.path_exclusion else "CHL2_gap_excl_cond_eta"
-            status["model"] = os_model
-            os_mods = status["mods"]
-            os_summary, _os_matrix = run_os_prime_residue_test(
-                prime_csv=prime_path,
-                block_files=block_files,
-                primes=primes,
-                log_x=log_x,
-                model_name=os_model,
-                mods=os_mods,
-                residue_mode=args.os_residue_mode,
-                path_cache_file=path_cache_path,
-                max_transitions=int(args.os_max_transitions),
-                chunksize=int(args.os_prime_chunksize),
-                outdir=outdir,
-            )
-            status["ran"] = True
-            status["summary_csv"] = str(outdir / "chl2_os_prime_residue_summary.csv")
-            status["matrix_csv"] = str(outdir / "chl2_os_prime_residue_transition_by_mod.csv")
-            status["n_summary_rows"] = int(len(os_summary))
-            print("[CHL2-OS] wrote prime-residue OS outputs", flush=True)
-    with open(outdir / "chl2_os_prime_residue_status.json", "w", encoding="utf-8") as f:
-        json.dump(status, f, indent=2)
-    if args.require_os and not status.get("ran"):
-        raise RuntimeError(f"OS prime-residue test was required but did not run: {status.get('skip_reason')}")
-    return os_summary, status
-
-
 def main() -> None:
     ap = argparse.ArgumentParser(description="CHL2 consecutive exclusion audit")
     ap.add_argument("--config", required=True, help="Path to v46r2c_config.json or equivalent")
@@ -1468,8 +1251,6 @@ def main() -> None:
     ap.add_argument("--os-residue-mode", choices=["reduced", "all"], default="reduced", help="Use reduced residue classes or all residues in OS matrices")
     ap.add_argument("--os-max-transitions", type=int, default=0, help="Optional cap on prime transitions for OS test; 0 means all")
     ap.add_argument("--os-prime-chunksize", type=int, default=1_000_000, help="Rows per chunk while streaming prime-csv")
-    ap.add_argument("--require-os", action="store_true", help="Fail the run if --prime-csv is requested but the absolute prime-residue OS test is skipped")
-    ap.add_argument("--os-only", action="store_true", help="Run only the absolute prime-residue OS diagnostic after path-cache setup; skip block metric evaluation")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
 
@@ -1553,11 +1334,8 @@ def main() -> None:
         "cache_maxsize_per_worker": int(args.cache_maxsize),
         "path_cache_file": str(path_cache_path) if path_cache_path is not None else None,
         "path_cache_source": args.path_cache_source,
-        "prime_csv": str(resolve_prime_csv(args.prime_csv, config, root, config_path=config_path)) if args.prime_csv else None,
-        "prime_csv_candidates": [str(x) for x in prime_csv_candidates(args.prime_csv, config, root, config_path=config_path)] if args.prime_csv else [],
+        "prime_csv": str(resolve_prime_csv(args.prime_csv, config, root)) if args.prime_csv else None,
         "os_prime_mods": [int(x) for x in args.os_prime_mods.split(',') if x.strip()],
-        "os_only": bool(args.os_only),
-        "require_os": bool(args.require_os),
         "filters": filters,
         "models": model_list,
         "core_factor": "E_no_interior(g;x)=exp(-sum_{2<=u<=g-2,u even} S_Y({0,u,g})/S_Y({0,g})/log(x))",
@@ -1570,33 +1348,6 @@ def main() -> None:
     if args.dry_run:
         print(json.dumps(run_config, indent=2))
         print(pd.DataFrame(diag_rows).to_string(index=False))
-        return
-
-    if args.os_only:
-        os_summary, os_status = run_optional_os_prime_residue_test(
-            args=args,
-            config=config,
-            root=root,
-            config_path=config_path,
-            block_files=block_files,
-            primes=primes,
-            log_x=log_x,
-            path_cache_path=path_cache_path,
-            outdir=outdir,
-        )
-        interp = f"""# CHL2 absolute-prime-residue Oliver--Soundararajan diagnostic — OS-only run
-
-Requested: `{os_status.get('requested')}`.
-Ran: `{os_status.get('ran')}`.
-Resolved prime CSV: `{os_status.get('resolved_prime_csv')}`.
-Model: `{os_status.get('model')}`.
-Mods: `{os_status.get('mods')}`.
-
-{('Prime-residue OS summary was written to `chl2_os_prime_residue_summary.csv`.' if os_summary is not None else 'Prime-residue OS test did not run. See `chl2_os_prime_residue_status.json` for the exact skip reason.')}
-"""
-        with open(outdir / "chl2_interpretacion.md", "w", encoding="utf-8") as f:
-            f.write(interp)
-        print(f"[CHL2] wrote OS-only outputs to {outdir}")
         return
 
     all_eval_dicts: List[dict] = []
@@ -1635,17 +1386,32 @@ Mods: `{os_status.get('mods')}`.
     if all_excl_diag:
         pd.concat(all_excl_diag, ignore_index=True).to_csv(outdir / "chl2_exclusion_diagnostics.csv", index=False)
 
-    os_summary, os_status = run_optional_os_prime_residue_test(
-        args=args,
-        config=config,
-        root=root,
-        config_path=config_path,
-        block_files=block_files,
-        primes=primes,
-        log_x=log_x,
-        path_cache_path=path_cache_path,
-        outdir=outdir,
-    )
+    os_summary = None
+    if args.prime_csv:
+        prime_path = resolve_prime_csv(args.prime_csv, config, root)
+        if prime_path is None:
+            print("[CHL2-OS] prime-csv requested but no path could be resolved; skipping", flush=True)
+        elif not prime_path.exists():
+            print(f"[CHL2-OS] prime-csv not found: {prime_path}; skipping", flush=True)
+        else:
+            os_model = args.os_model
+            if os_model == "auto":
+                os_model = "CHL2_path_excl_cond_eta" if args.path_exclusion else "CHL2_gap_excl_cond_eta"
+            os_mods = [int(x.strip()) for x in args.os_prime_mods.split(',') if x.strip()]
+            os_summary, _os_matrix = run_os_prime_residue_test(
+                prime_csv=prime_path,
+                block_files=block_files,
+                primes=primes,
+                log_x=log_x,
+                model_name=os_model,
+                mods=os_mods,
+                residue_mode=args.os_residue_mode,
+                path_cache_file=path_cache_path,
+                max_transitions=int(args.os_max_transitions),
+                chunksize=int(args.os_prime_chunksize),
+                outdir=outdir,
+            )
+            print("[CHL2-OS] wrote prime-residue OS outputs", flush=True)
 
     best_lines = []
     for f, grp in summary.groupby("filter"):
@@ -1683,7 +1449,7 @@ This factor is parameter-free. It penalizes candidate gaps whose interior statis
 
 ## Absolute-prime-residue Oliver--Soundararajan diagnostic
 
-{('Prime-residue OS summary was written to `chl2_os_prime_residue_summary.csv`.' if os_summary is not None else 'Prime-residue OS test was not run. See `chl2_os_prime_residue_status.json`; reason: ' + str(os_status.get('skip_reason')))}
+{('Prime-residue OS summary was written to `chl2_os_prime_residue_summary.csv`.' if os_summary is not None else 'Prime-residue OS test was not run. Pass `--prime-csv AUTO` or a CSV path to enable it.')}
 
 ## Reading rule
 

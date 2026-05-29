@@ -109,22 +109,6 @@ def omega_second_order_full(
     }
 
 
-def lowwheel_covers_all_classes(residues: Sequence[int], p: int) -> bool:
-    """Return True if ``residues`` occupy every class modulo ``p``.
-
-    This is the exact low-wheel hard-zero obstruction.  It is used explicitly
-    in CHL3 because the q=3 anomaly is precisely a failure mode where an
-    absolute Möbius zero can be diluted by averaged approximations.
-    """
-    p = int(p)
-    return len({int(r) % p for r in residues}) >= p
-
-
-def lowwheel_is_inadmissible(residues: Sequence[int], low_primes: Sequence[int]) -> bool:
-    """Return True if the tuple is inadmissible for at least one low prime."""
-    return any(lowwheel_covers_all_classes(residues, int(q)) for q in low_primes)
-
-
 def local_factor_from_residues(residues: Sequence[int], tuple_size: int, p: int) -> float:
     """
     Local Hardy--Littlewood factor for a tuple of fixed cardinality.
@@ -133,8 +117,7 @@ def local_factor_from_residues(residues: Sequence[int], tuple_size: int, p: int)
     distinct residues. This is essential for H5 with repeated low-wheel
     residues.
     """
-    p = int(p)
-    nu = len({int(r) % p for r in residues})
+    nu = len({r % p for r in residues})
     return (1.0 - nu / p) / ((1.0 - 1.0 / p) ** tuple_size)
 
 
@@ -143,9 +126,6 @@ def lowwheel_singular_from_residues(
     tuple_size: int,
     low_primes: Sequence[int],
 ) -> float:
-    """Product of local factors over low primes, preserving hard zeros."""
-    if lowwheel_is_inadmissible(residues, low_primes):
-        return 0.0
     prod = 1.0
     for p in low_primes:
         factor = local_factor_from_residues(residues, tuple_size, p)
@@ -162,83 +142,157 @@ def omega_second_order_lowwheel(
     singular_ratio_h4_h3,
 ) -> tuple[float, dict]:
     """
-    Low-wheel second-order cluster correction.
+    Strict low-wheel Möbius second-order correction.
 
-    Uses full CHL2 marginal interior intensities p_u but approximates
-    cross-dependence through low-prime local cumulants.
+    The base first-order intensity is the full-horizon CHL2 quantity
+
+        Omega^(1) = sum_u S_Y(H4(u))/S_Y(H3)/log(x).
+
+    The cross-cumulant is computed on the selected low wheel only.  This is
+    intentionally not an ``early exit'' approximation: all unordered interior
+    pairs u < v are included.  The computation remains fast because, on a fixed
+    low wheel, the ratios S_low(H4)/S_low(H3) and S_low(H5)/S_low(H3) depend only
+    on residues modulo M_low = prod(low_primes), so the pair sum is aggregated
+    exactly by residue classes.
+
+    If H5 is inadmissible modulo any selected low prime, S_low(H5)=0 exactly,
+    giving the hard negative cumulant -p_u p_v.  This is the intended Möbius
+    strict correction for compressed low-wheel systems such as q=3.
     """
+    inv_log = 1.0 / max(float(log_x), 1.0)
+    offsets = even_interior_offsets(g2)
+
+    # Full-horizon first-order intensity and Bernoulli self term.
+    omega1 = 0.0
+    self_sum_full = 0.0
+    for u in offsets:
+        p_full = inv_log * float(singular_ratio_h4_h3(g1, g2, u))
+        if not (p_full > 0.0):
+            p_full = 0.0
+        omega1 += p_full
+        self_sum_full += p_full * p_full
+    self_term = 0.5 * self_sum_full
+
     if not low_primes:
-        # Empty low-wheel reproduces CHL2 first-order Poisson.
-        omega1 = 0.0
-        for u in even_interior_offsets(g2):
-            omega1 += (1.0 / log_x) * singular_ratio_h4_h3(g1, g2, u)
-        return omega1, {"low_primes": [], "kappa_sum": 0.0}
+        return omega1, {
+            "low_primes": [],
+            "M_low": 1,
+            "omega1": omega1,
+            "kappa_sum": 0.0,
+            "self_term": self_term,
+            "omega_self": omega1 + self_term,
+            "hard_zero_h5_pairs": 0.0,
+            "hard_zero_h5_weight": 0.0,
+            "hard_zero_h5_kappa_mass": 0.0,
+            "kappa_negative_mass": 0.0,
+            "kappa_positive_mass": 0.0,
+            "mobius_low_kappa_method": 2.0,
+        }
 
     M = 1
     for p in low_primes:
-        M *= p
+        M *= int(p)
 
-    inv_log = 1.0 / log_x
-    offsets = even_interior_offsets(g2)
+    h3_res = (0 % M, int(g1) % M, (int(g1) + int(g2)) % M)
+    s3_low = lowwheel_singular_from_residues(h3_res, 3, low_primes)
+    if s3_low <= 0.0:
+        # If the endpoint triple is already inadmissible on the low wheel, the
+        # caller should normally have zeroed the CHL weight through log_R.  We
+        # return a finite diagnostic rather than raising.
+        return omega1, {
+            "low_primes": list(low_primes),
+            "M_low": M,
+            "omega1": omega1,
+            "kappa_sum": 0.0,
+            "self_term": self_term,
+            "omega_self": omega1 + self_term,
+            "hard_zero_h5_pairs": 0.0,
+            "hard_zero_h5_weight": 0.0,
+            "hard_zero_h5_kappa_mass": 0.0,
+            "kappa_negative_mass": 0.0,
+            "kappa_positive_mass": 0.0,
+            "mobius_low_kappa_method": 2.0,
+        }
 
-    # Aggregate p_u by low-wheel residue.
-    S = {r: 0.0 for r in range(M)}
-    Q = {r: 0.0 for r in range(M)}
-    omega1 = 0.0
-
+    # Aggregate p_u^low by residue.
+    N = {r: 0 for r in range(M)}
+    S_low = {r: 0.0 for r in range(M)}
+    Q_low = {r: 0.0 for r in range(M)}
+    skipped_zero_h4 = 0
     for u in offsets:
-        p_u = inv_log * singular_ratio_h4_h3(g1, g2, u)
-        r = u % M
-        S[r] += p_u
-        Q[r] += p_u * p_u
-        omega1 += p_u
-
-    # Low-wheel residues of endpoints.
-    h3_res = (0 % M, g1 % M, (g1 + g2) % M)
-    s3 = lowwheel_singular_from_residues(h3_res, 3, low_primes)
+        r = int(u) % M
+        N[r] += 1
+        h4_res = (0 % M, int(g1) % M, (int(g1) + r) % M, (int(g1) + int(g2)) % M)
+        s4_low = lowwheel_singular_from_residues(h4_res, 4, low_primes)
+        if s4_low <= 0.0:
+            skipped_zero_h4 += 1
+            continue
+        p_low = inv_log * (s4_low / s3_low)
+        S_low[r] += p_low
+        Q_low[r] += p_low * p_low
 
     kappa_sum = 0.0
-    active_pairs = 0
-
-    residues = [r for r in range(M) if S[r] != 0.0]
+    active_pairs = 0.0
+    hard_zero_pairs = 0.0
+    hard_zero_weight = 0.0
+    hard_zero_kappa_mass = 0.0
+    nonzero_h5_pairs = 0.0
+    kappa_negative_mass = 0.0
+    kappa_positive_mass = 0.0
+    inv_log2 = inv_log * inv_log
+    residues = [r for r in range(M) if N[r] > 0]
 
     for i, r in enumerate(residues):
         for s in residues[i:]:
             if r != s:
-                weight = S[r] * S[s]
+                pair_count = float(N[r] * N[s])
+                product_mass = S_low[r] * S_low[s]
             else:
-                weight = 0.5 * (S[r] * S[r] - Q[r])
-
-            if weight == 0.0:
+                pair_count = float(N[r] * (N[r] - 1) // 2)
+                product_mass = 0.5 * (S_low[r] * S_low[r] - Q_low[r])
+            if pair_count <= 0.0:
                 continue
-
-            h4_r = (0 % M, g1 % M, (g1 + r) % M, (g1 + g2) % M)
-            h4_s = (0 % M, g1 % M, (g1 + s) % M, (g1 + g2) % M)
-            h5_rs = (0 % M, g1 % M, (g1 + r) % M, (g1 + s) % M, (g1 + g2) % M)
-
-            s4_r = lowwheel_singular_from_residues(h4_r, 4, low_primes)
-            s4_s = lowwheel_singular_from_residues(h4_s, 4, low_primes)
-            if s4_r <= 0.0 or s4_s <= 0.0 or s3 <= 0.0:
-                continue
-
-            if lowwheel_is_inadmissible(h5_rs, low_primes):
-                # Exact Möbius hard zero: S_low(H5)=0, hence coupling=0 and
-                # kappa contribution equals -weight.  Do not skip this case.
-                coupling = 0.0
+            h5_res = (
+                0 % M,
+                int(g1) % M,
+                (int(g1) + r) % M,
+                (int(g1) + s) % M,
+                (int(g1) + int(g2)) % M,
+            )
+            s5_low = lowwheel_singular_from_residues(h5_res, 5, low_primes)
+            if s5_low <= 0.0:
+                p_uv_low = 0.0
+                hard_zero_pairs += pair_count
+                hard_zero_weight += product_mass
             else:
-                s5 = lowwheel_singular_from_residues(h5_rs, 5, low_primes)
-                coupling = (s5 * s3) / (s4_r * s4_s)
-
-            kappa_sum += weight * (coupling - 1.0)
-            active_pairs += 1
+                p_uv_low = inv_log2 * (s5_low / s3_low)
+                nonzero_h5_pairs += pair_count
+            kappa = pair_count * p_uv_low - product_mass
+            if s5_low <= 0.0 and product_mass > 0.0:
+                hard_zero_kappa_mass += kappa
+            if kappa < 0.0:
+                kappa_negative_mass += kappa
+            elif kappa > 0.0:
+                kappa_positive_mass += kappa
+            kappa_sum += kappa
+            active_pairs += pair_count
 
     omega2 = omega1 - kappa_sum
-
+    omega_self = omega1 + self_term - kappa_sum
     return omega2, {
         "low_primes": list(low_primes),
         "M_low": M,
         "omega1": omega1,
         "kappa_sum": kappa_sum,
-        "active_residue_pairs": active_pairs,
+        "self_term": self_term,
+        "omega_self": omega_self,
+        "active_pairs": active_pairs,
+        "nonzero_h5_pairs": nonzero_h5_pairs,
+        "hard_zero_h5_pairs": hard_zero_pairs,
+        "hard_zero_h5_weight": hard_zero_weight,
+        "hard_zero_h5_kappa_mass": hard_zero_kappa_mass,
+        "kappa_negative_mass": kappa_negative_mass,
+        "kappa_positive_mass": kappa_positive_mass,
+        "skipped_zero_h4_pairs": float(skipped_zero_h4),
+        "mobius_low_kappa_method": 2.0,
     }
-
