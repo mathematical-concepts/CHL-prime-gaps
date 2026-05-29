@@ -109,6 +109,22 @@ def omega_second_order_full(
     }
 
 
+def lowwheel_covers_all_classes(residues: Sequence[int], p: int) -> bool:
+    """Return True if ``residues`` occupy every class modulo ``p``.
+
+    This is the exact low-wheel hard-zero obstruction.  It is used explicitly
+    in CHL3 because the q=3 anomaly is precisely a failure mode where an
+    absolute Möbius zero can be diluted by averaged approximations.
+    """
+    p = int(p)
+    return len({int(r) % p for r in residues}) >= p
+
+
+def lowwheel_is_inadmissible(residues: Sequence[int], low_primes: Sequence[int]) -> bool:
+    """Return True if the tuple is inadmissible for at least one low prime."""
+    return any(lowwheel_covers_all_classes(residues, int(q)) for q in low_primes)
+
+
 def local_factor_from_residues(residues: Sequence[int], tuple_size: int, p: int) -> float:
     """
     Local Hardy--Littlewood factor for a tuple of fixed cardinality.
@@ -117,7 +133,8 @@ def local_factor_from_residues(residues: Sequence[int], tuple_size: int, p: int)
     distinct residues. This is essential for H5 with repeated low-wheel
     residues.
     """
-    nu = len({r % p for r in residues})
+    p = int(p)
+    nu = len({int(r) % p for r in residues})
     return (1.0 - nu / p) / ((1.0 - 1.0 / p) ** tuple_size)
 
 
@@ -126,6 +143,9 @@ def lowwheel_singular_from_residues(
     tuple_size: int,
     low_primes: Sequence[int],
 ) -> float:
+    """Product of local factors over low primes, preserving hard zeros."""
+    if lowwheel_is_inadmissible(residues, low_primes):
+        return 0.0
     prod = 1.0
     for p in low_primes:
         factor = local_factor_from_residues(residues, tuple_size, p)
@@ -198,12 +218,17 @@ def omega_second_order_lowwheel(
 
             s4_r = lowwheel_singular_from_residues(h4_r, 4, low_primes)
             s4_s = lowwheel_singular_from_residues(h4_s, 4, low_primes)
-            s5 = lowwheel_singular_from_residues(h5_rs, 5, low_primes)
-
             if s4_r <= 0.0 or s4_s <= 0.0 or s3 <= 0.0:
                 continue
 
-            coupling = (s5 * s3) / (s4_r * s4_s)
+            if lowwheel_is_inadmissible(h5_rs, low_primes):
+                # Exact Möbius hard zero: S_low(H5)=0, hence coupling=0 and
+                # kappa contribution equals -weight.  Do not skip this case.
+                coupling = 0.0
+            else:
+                s5 = lowwheel_singular_from_residues(h5_rs, 5, low_primes)
+                coupling = (s5 * s3) / (s4_r * s4_s)
+
             kappa_sum += weight * (coupling - 1.0)
             active_pairs += 1
 

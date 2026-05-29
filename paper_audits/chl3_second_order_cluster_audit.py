@@ -114,11 +114,37 @@ def local_factor_from_residues(residues: Sequence[int], tuple_size: int, p: int)
     return (1.0 - nu / pf) / ((1.0 - 1.0 / pf) ** int(tuple_size))
 
 
+def lowwheel_covers_all_classes(residues: Sequence[int], p: int) -> bool:
+    """Return True if residues occupy every class modulo ``p``.
+
+    This is the hard-zero condition for low-wheel admissibility.  It is kept
+    explicit because the CHL3 q=3 correction depends precisely on preserving
+    the absolute zero of inadmissible H5 tuples instead of diluting it into a
+    small averaged factor.
+    """
+    p = int(p)
+    return len({int(r) % p for r in residues}) >= p
+
+
+def lowwheel_is_inadmissible(residues: Sequence[int], low_primes: Sequence[int]) -> bool:
+    """Return True if the tuple is inadmissible for at least one low prime."""
+    return any(lowwheel_covers_all_classes(residues, int(q)) for q in low_primes)
+
+
 def lowwheel_singular_from_residues(residues: Sequence[int], tuple_size: int, low_primes: Sequence[int]) -> float:
-    """Product of local singular-series factors over ``low_primes`` only."""
+    """Product of local singular-series factors over ``low_primes`` only.
+
+    If a tuple covers all residue classes modulo any selected low prime, the
+    singular factor is a hard zero.  This is not an approximation: it is exactly
+    the low-wheel Möbius/admissibility obstruction.
+    """
+    if lowwheel_is_inadmissible(residues, low_primes):
+        return 0.0
     prod = 1.0
     for p in low_primes:
         factor = local_factor_from_residues(residues, tuple_size, int(p))
+        # At this point factor should be strictly positive.  Keep the guard for
+        # numerical safety but do not silently turn hard zeros into tiny values.
         if factor <= 0.0:
             return 0.0
         prod *= factor
@@ -251,14 +277,18 @@ def _omega_cluster_for_pair(g1: int, g2: int) -> Dict[str, float]:
         residues = [r for r in range(M) if S[r] != 0.0]
         kappa_sum = 0.0
         active_pairs = 0
+        hard_zero_h5_pairs = 0
+        hard_zero_h5_weight = 0.0
+        skipped_zero_h4_pairs = 0
         if s3 > 0.0:
             for i, r in enumerate(residues):
                 for s in residues[i:]:
                     if r != s:
                         weight = S[r] * S[s]
                     else:
+                        # unordered pairs u < v in the same residue class
                         weight = 0.5 * (S[r] * S[r] - Q[r])
-                    if weight == 0.0:
+                    if weight <= 0.0:
                         continue
                     h4_r = (0 % M, g1 % M, (g1 + r) % M, (g1 + g2) % M)
                     h4_s = (0 % M, g1 % M, (g1 + s) % M, (g1 + g2) % M)
@@ -266,9 +296,24 @@ def _omega_cluster_for_pair(g1: int, g2: int) -> Dict[str, float]:
                     s4_r = lowwheel_singular_from_residues(h4_r, 4, low)
                     s4_s = lowwheel_singular_from_residues(h4_s, 4, low)
                     if s4_r <= 0.0 or s4_s <= 0.0:
+                        # If a one-point interior extension is already low-wheel
+                        # inadmissible, its p_u contribution should already be
+                        # zero in S[r].  Keep this counter as a guardrail.
+                        skipped_zero_h4_pairs += 1
                         continue
-                    s5 = lowwheel_singular_from_residues(h5_rs, 5, low)
-                    coupling = (s5 * s3) / (s4_r * s4_s)
+
+                    # Strict Möbius hard-zero layer: if H5 occupies every residue
+                    # class modulo any selected low prime, force S_low(H5)=0.
+                    # This preserves the absolute exclusion that is otherwise
+                    # easy to dilute in aggregate low-wheel approximations.
+                    if lowwheel_is_inadmissible(h5_rs, low):
+                        coupling = 0.0
+                        hard_zero_h5_pairs += 1
+                        hard_zero_h5_weight += weight
+                    else:
+                        s5 = lowwheel_singular_from_residues(h5_rs, 5, low)
+                        coupling = (s5 * s3) / (s4_r * s4_s)
+
                     kappa_sum += weight * (coupling - 1.0)
                     active_pairs += 1
         omega2 = omega1 - kappa_sum
@@ -276,6 +321,9 @@ def _omega_cluster_for_pair(g1: int, g2: int) -> Dict[str, float]:
         out[f"logE_lowwheel2_{label}"] = -float(omega2)
         out[f"kappa_sum_{label}"] = float(kappa_sum)
         out[f"active_residue_pairs_{label}"] = float(active_pairs)
+        out[f"hard_zero_h5_pairs_{label}"] = float(hard_zero_h5_pairs)
+        out[f"hard_zero_h5_weight_{label}"] = float(hard_zero_h5_weight)
+        out[f"skipped_zero_h4_pairs_{label}"] = float(skipped_zero_h4_pairs)
         out[f"M_low_{label}"] = float(M)
     return out
 
@@ -785,7 +833,7 @@ def run_os_prime_residue_test_chl3(
                     "from_residue_b": b,
                     "to_residue_a": a,
                     "observed_count": counts[q][i, j],
-                    "expected_count_model": preds[q][i, j],
+                    "expected_count_model": row_counts[i] * pred[i, j],
                     "empirical_probability": emp[i, j],
                     "model_probability": pred[i, j],
                     "row_count": row_counts[i],
