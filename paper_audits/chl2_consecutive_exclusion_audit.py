@@ -50,6 +50,7 @@ import argparse
 import json
 import math
 import os
+import sys
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -57,16 +58,14 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 from collections import Counter
 
-# Allow running this script directly from the repository root without installing.
-import sys
-_REPO_ROOT = Path(__file__).resolve().parents[1]
-if str(_REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT))
-
 import numpy as np
 import pandas as pd
 
-from chl_kernel.primes import primes_upto
+# Allow execution as a file from a fresh clone without requiring pip install -e . first.
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+from chl_kernel.telemetry import telemetry_start, write_telemetry
 
 
 FILTERS = {
@@ -157,6 +156,32 @@ def _iter_chunks(seq: Sequence[Tuple[int, int]], chunk_size: int) -> Iterable[Li
         yield list(seq[i:i + chunk_size])
 
 
+def auto_path_chunk_size(
+    n_pairs: int,
+    workers: int,
+    requested_chunk_size: int,
+    target_tasks_per_worker: int = 6,
+    min_chunk_size: int = 32,
+    max_chunk_size: int = 512,
+) -> int:
+    """Choose a path-cache chunk size that keeps worker processes busy.
+
+    The original CHL2 default used large chunks (for example 5000 unique
+    pairs per task).  On single-block diagnostics this can create only a few
+    tasks, leaving most CPU cores idle.  A positive requested chunk size is
+    respected exactly; requested_chunk_size <= 0 enables automatic sizing.
+    """
+    n_pairs = int(max(0, n_pairs))
+    workers = int(max(1, workers))
+    if requested_chunk_size and int(requested_chunk_size) > 0:
+        return int(requested_chunk_size)
+    if n_pairs <= 0:
+        return 1
+    target_tasks = max(workers, workers * int(max(1, target_tasks_per_worker)))
+    chunk = int(math.ceil(n_pairs / target_tasks))
+    return int(max(min_chunk_size, min(max_chunk_size, chunk)))
+
+
 def compute_path_exclusion_cache_parallel(
     pairs_df: pd.DataFrame,
     primes: Sequence[int],
@@ -164,12 +189,23 @@ def compute_path_exclusion_cache_parallel(
     workers: int,
     chunk_size: int,
     cache_maxsize: int,
+    target_tasks_per_worker: int = 6,
 ) -> pd.DataFrame:
     pairs_df = pairs_df[["g1", "g2"]].drop_duplicates().sort_values(["g1", "g2"]).reset_index(drop=True)
     pairs = [(int(a), int(b)) for a, b in pairs_df[["g1", "g2"]].itertuples(index=False, name=None)]
-    tasks = [(i, chunk) for i, chunk in enumerate(_iter_chunks(pairs, chunk_size))]
     workers = max(1, int(workers))
-    print(f"[CHL2-path] unique pairs={len(pairs):,}; chunks={len(tasks):,}; workers={workers}", flush=True)
+    effective_chunk_size = auto_path_chunk_size(
+        n_pairs=len(pairs),
+        workers=workers,
+        requested_chunk_size=int(chunk_size),
+        target_tasks_per_worker=int(target_tasks_per_worker),
+    )
+    tasks = [(i, chunk) for i, chunk in enumerate(_iter_chunks(pairs, effective_chunk_size))]
+    print(
+        f"[CHL2-path] unique pairs={len(pairs):,}; chunks={len(tasks):,}; "
+        f"workers={workers}; path_chunk_size={effective_chunk_size}",
+        flush=True,
+    )
     t0 = time.time()
     results: List[Tuple[int, List[Tuple[int, int, int, float, float]]]] = []
     if workers == 1:
@@ -238,6 +274,19 @@ def parse_blocks_arg(s: Optional[str], default: Sequence[int]) -> List[int]:
         else:
             out.append(int(part))
     return sorted(set(out))
+
+
+def primes_upto(n: int) -> List[int]:
+    n = int(n)
+    if n < 2:
+        return []
+    sieve = bytearray(b"\x01") * (n + 1)
+    sieve[0:2] = b"\x00\x00"
+    for p in range(2, int(n**0.5) + 1):
+        if sieve[p]:
+            start = p * p
+            sieve[start:n+1:p] = b"\x00" * (((n - start) // p) + 1)
+    return [i for i in range(2, n + 1) if sieve[i]]
 
 
 def logsumexp(a: np.ndarray) -> float:
@@ -832,63 +881,111 @@ def analyze_block_file_task(task: Tuple[int, str, Tuple[int, ...], float, Tuple[
 # leakage is introduced.
 
 
-def prime_csv_candidates(prime_arg: Optional[str], config: dict, root: Path, config_path: Optional[Path] = None) -> List[Path]:
-    """Return candidate chronological-prime CSV paths in priority order.
-
-    The previous implementation used exactly root/input_dir/real_prime_sequence
-    for --prime-csv AUTO.  That was too brittle: in several local layouts the
-    prime sequence is stored either directly under root, next to the config, or
-    as an already-qualified path.  This resolver checks all rigorous locations
-    without changing the statistical model.
-    """
-    if not prime_arg:
-        return []
-    arg = str(prime_arg)
-    cands: List[Path] = []
-    if arg.upper() == "AUTO":
-        rel = config.get("real_prime_sequence")
-        if not rel:
-            return []
-        relp = Path(str(rel))
-        if relp.is_absolute():
-            cands.append(relp)
-        input_dir = root / str(config.get("input_dir", ""))
-        cands.extend([
-            input_dir / relp,
-            root / relp,
-        ])
-        if config_path is not None:
-            cands.extend([
-                config_path.parent / relp,
-                config_path.parent.parent / relp,
-                config_path.parent.parent / str(config.get("input_dir", "")) / relp,
-            ])
-    else:
-        p = Path(arg)
-        if p.is_absolute():
-            cands.append(p)
-        else:
-            cands.extend([p, root / p])
-            if config_path is not None:
-                cands.append(config_path.parent / p)
-    # Preserve order while removing duplicates.
+def _dedupe_paths(paths: Iterable[Path]) -> List[Path]:
+    """Deduplicate paths while preserving order."""
     out: List[Path] = []
     seen = set()
-    for c in cands:
-        key = str(c)
+    for path in paths:
+        if path is None:
+            continue
+        pp = Path(path)
+        key = str(pp)
         if key not in seen:
-            out.append(c)
+            out.append(pp)
             seen.add(key)
     return out
 
 
-def resolve_prime_csv(prime_arg: Optional[str], config: dict, root: Path, config_path: Optional[Path] = None) -> Optional[Path]:
-    cands = prime_csv_candidates(prime_arg, config, root, config_path=config_path)
-    for c in cands:
-        if c.exists():
-            return c
-    return cands[0] if cands else None
+def prime_csv_candidates(
+    prime_arg: Optional[str],
+    config: dict,
+    root: Path,
+    *,
+    config_path: Optional[Path] = None,
+) -> List[Path]:
+    """Return plausible chronological-prime CSV paths for the OS diagnostic.
 
+    ``--prime-csv AUTO`` searches common config keys and generated-data
+    filenames.  Explicit paths are resolved relative to the current working
+    directory, the provided root, and the config directory.  This makes the
+    CHL2 script robust across datasets generated by older and newer pipelines.
+    """
+    if not prime_arg:
+        return []
+
+    root = Path(root)
+    config_path = Path(config_path) if config_path is not None else None
+    config_dir = config_path.parent if config_path is not None else Path.cwd()
+    input_dir = config.get("input_dir", "") or ""
+    candidates: List[Path] = []
+
+    def add_rel(value: str) -> None:
+        if value is None:
+            return
+        value = str(value).strip()
+        if not value:
+            return
+        path = Path(value)
+        if path.is_absolute():
+            candidates.append(path)
+        else:
+            candidates.extend([
+                path,
+                Path.cwd() / path,
+                root / path,
+                config_dir / path,
+                config_dir.parent / path,
+            ])
+            if input_dir:
+                candidates.extend([
+                    root / input_dir / path,
+                    config_dir / input_dir / path,
+                    config_dir.parent / input_dir / path,
+                ])
+
+    if str(prime_arg).upper() == "AUTO":
+        for key in (
+            "real_prime_sequence",
+            "prime_csv",
+            "prime_sequence",
+            "primes_csv",
+            "real_primes_csv",
+            "real_prime_csv",
+            "prime_file",
+        ):
+            val = config.get(key)
+            if val:
+                add_rel(str(val))
+        for name in (
+            "real_primes.csv.gz",
+            "real_primes.csv",
+            "v46t12_ds1_real_primes.csv.gz",
+            "v46t12_ds1_real_primes.csv",
+        ):
+            add_rel(name)
+    else:
+        add_rel(str(prime_arg))
+
+    return _dedupe_paths(candidates)
+
+
+def resolve_prime_csv(
+    prime_arg: Optional[str],
+    config: dict,
+    root: Path,
+    *,
+    config_path: Optional[Path] = None,
+) -> Optional[Path]:
+    """Resolve a chronological-prime CSV path.
+
+    Returns the first existing candidate.  If no candidate exists, returns the
+    first candidate so the config/status output can show what path was tried.
+    """
+    candidates = prime_csv_candidates(prime_arg, config, root, config_path=config_path)
+    for path in candidates:
+        if Path(path).exists():
+            return Path(path)
+    return candidates[0] if candidates else None
 
 def infer_prime_column(path: Path) -> Tuple[Optional[str], bool]:
     """Return (column_name, header_mode).  header_mode=False means use header=None."""
@@ -978,28 +1075,12 @@ def matrix_kl_weighted(emp: np.ndarray, pred: np.ndarray, row_counts: np.ndarray
 
 
 
-def pearson_chi_square_from_counts(obs_counts: np.ndarray, exp_counts: np.ndarray, row_counts: Optional[np.ndarray] = None) -> Dict[str, float]:
-    """Pearson chi-square diagnostic for transition matrices.
+def pearson_chi_square_fast(obs_counts: np.ndarray, exp_counts: np.ndarray, row_counts: Optional[np.ndarray] = None) -> Dict[str, float]:
+    """Pearson chi-square table diagnostic without SciPy dependency.
 
-    Parameters
-    ----------
-    obs_counts:
-        Observed transition counts O_ij.
-    exp_counts:
-        Expected transition counts E_ij under the model.  In the CHL2
-        prime-residue OS diagnostic these are accumulated by summing the
-        model transition probabilities for each observed previous-prime
-        residue.
-    row_counts:
-        Optional row totals.  If supplied, degrees of freedom are computed as
-        sum_i (m_i - 1) over rows with positive observed mass and at least two
-        cells with positive expected mass.
-
-    Notes
-    -----
-    Row-cosine can be visually forgiving in a two-state reduced residue space
-    such as q=3.  This Pearson statistic is deliberately count-sensitive and
-    exposes wrong-sign diagonal/off-diagonal bias that a cosine can hide.
+    The expected table may be unnormalised.  For each empirical row, expected
+    counts are scaled to the empirical row total before computing the statistic.
+    This is the same convention used in the paper's prime-residue diagnostic.
     """
     O = np.asarray(obs_counts, dtype=float)
     E = np.asarray(exp_counts, dtype=float)
@@ -1008,7 +1089,6 @@ def pearson_chi_square_from_counts(obs_counts: np.ndarray, exp_counts: np.ndarra
     if row_counts is None:
         row_counts = O.sum(axis=1)
     row_counts = np.asarray(row_counts, dtype=float)
-
     chi2 = 0.0
     inf_flag = False
     cells_used = 0
@@ -1018,9 +1098,6 @@ def pearson_chi_square_from_counts(obs_counts: np.ndarray, exp_counts: np.ndarra
     for i in range(O.shape[0]):
         if row_counts[i] <= 0:
             continue
-        # If accumulated expected counts have tiny row-sum drift, rescale row
-        # to the empirical row count.  This preserves the model probabilities
-        # while ensuring a valid Pearson expected table.
         e_row = E[i].copy()
         e_sum = float(e_row.sum())
         if e_sum > 0:
@@ -1036,23 +1113,13 @@ def pearson_chi_square_from_counts(obs_counts: np.ndarray, exp_counts: np.ndarra
             rows_used += 1
             df += max(int(mask.sum()) - 1, 0)
     if inf_flag:
-        chi2 = float('inf')
+        chi2 = float("inf")
     total = float(np.sum(row_counts))
-    chi2_per_transition = chi2 / total if total > 0 and np.isfinite(chi2) else float('inf')
-    pval = float('nan')
-    if np.isfinite(chi2) and df > 0:
-        try:
-            from scipy.stats import chi2 as scipy_chi2  # type: ignore
-            pval = float(scipy_chi2.sf(chi2, df))
-        except Exception:
-            # SciPy is optional.  The statistic and df are sufficient for the
-            # paper; p-value can be computed externally if needed.
-            pval = float('nan')
     return {
         "pearson_chi2": float(chi2),
         "pearson_chi2_df": int(df),
-        "pearson_chi2_pvalue": pval,
-        "pearson_chi2_per_transition": float(chi2_per_transition),
+        "pearson_chi2_pvalue": float("nan"),
+        "pearson_chi2_per_transition": float(chi2 / total) if total > 0 and np.isfinite(chi2) else float("inf"),
         "pearson_chi2_cells_used": int(cells_used),
         "pearson_chi2_rows_used": int(rows_used),
         "pearson_chi2_infinite_flag": bool(inf_flag),
@@ -1246,84 +1313,154 @@ def run_os_prime_residue_test(
     chunksize: int,
     outdir: Path,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """Vectorized absolute prime-residue Oliver--Soundararajan diagnostic.
+
+    The older implementation streamed the chronological prime sequence one
+    transition at a time and updated the prediction inside nested Python loops.
+    This version keeps the same mathematics but groups each prime chunk by
+    ``(g_prev, from_residue, to_residue)`` using NumPy.  It is much faster on
+    DS1 while preserving the no-target-leakage rule: the model sees the actual
+    previous gap ``g_{i-2}``, never the target gap ``g_{i-1}``.
+
+    The matrix CSV writes ``model_expected_count = row_count * model_prob`` so
+    the Pearson chi-square statistic can be recomputed directly from the CSV.
+    """
     if not prime_csv.exists():
         raise FileNotFoundError(prime_csv)
     mods = [int(q) for q in mods]
+
+    print(f"[CHL2-OS] building kernel maps for {model_name}", flush=True)
     kernel_maps, meta = build_chl2_kernel_mod_maps(block_files, primes, log_x, model_name, mods, path_cache_file=path_cache_file)
 
-    counts = {q: np.zeros((len(reduced_residues_for_mod(q, residue_mode)), len(reduced_residues_for_mod(q, residue_mode))), dtype=np.float64) for q in mods}
-    preds = {q: np.zeros_like(counts[q], dtype=np.float64) for q in mods}
-    row_index = {q: {r: i for i, r in enumerate(reduced_residues_for_mod(q, residue_mode))} for q in mods}
     residues = {q: reduced_residues_for_mod(q, residue_mode) for q in mods}
+    row_index = {q: {r: i for i, r in enumerate(residues[q])} for q in mods}
+    dense_index: Dict[int, np.ndarray] = {}
+    for q in mods:
+        idx = np.full(q, -1, dtype=np.int16)
+        for i, r in enumerate(residues[q]):
+            idx[int(r) % q] = i
+        dense_index[q] = idx
+
+    # Precompute P(a | b, g_prev, q) matrices for every supported previous gap.
+    transition_rows: Dict[int, Dict[int, np.ndarray]] = {}
+    for q in mods:
+        n = len(residues[q])
+        transition_rows[q] = {}
+        for gp, km in kernel_maps.get(q, {}).items():
+            mat = np.zeros((n, n), dtype=np.float64)
+            for bi, b in enumerate(residues[q]):
+                for d, prob in enumerate(km):
+                    if prob <= 0.0:
+                        continue
+                    j = row_index[q].get((int(b) + int(d)) % q)
+                    if j is not None:
+                        mat[bi, j] += float(prob)
+            transition_rows[q][int(gp)] = mat
+
+    counts = {q: np.zeros((len(residues[q]), len(residues[q])), dtype=np.float64) for q in mods}
+    preds = {q: np.zeros_like(counts[q], dtype=np.float64) for q in mods}
     skipped_no_kernel = Counter()
     skipped_residue = Counter()
     used = Counter()
-    total_transitions = 0
 
-    prevprev: Optional[int] = None
-    prev: Optional[int] = None
-    stop = False
-    print(f"[CHL2-OS] streaming prime sequence: {prime_csv}", flush=True)
+    history = np.array([], dtype=np.int64)
+    total_transitions = 0
+    chunk_no = 0
+    t0 = time.time()
+    print(f"[CHL2-OS] vectorized streaming prime sequence: {prime_csv}", flush=True)
     for vals in stream_prime_values(prime_csv, chunksize=chunksize):
-        for pval in vals:
-            pcur = int(pval)
-            if prevprev is not None and prev is not None:
-                g_prev = int(prev - prevprev)
-                for q in mods:
-                    b = int(prev % q)       # previous prime residue
-                    a = int(pcur % q)       # current prime residue
-                    if b not in row_index[q] or a not in row_index[q]:
-                        skipped_residue[q] += 1
-                        continue
-                    km = kernel_maps.get(q, {}).get(g_prev)
-                    if km is None:
-                        skipped_no_kernel[q] += 1
-                        continue
-                    bi = row_index[q][b]
-                    ai = row_index[q][a]
-                    counts[q][bi, ai] += 1.0
-                    # Predicted target residue: a = b + g2 (mod q), so delta residue d maps to (b+d) mod q.
-                    for d, prob in enumerate(km):
-                        if prob <= 0:
-                            continue
-                        target = (b + d) % q
-                        j = row_index[q].get(target)
-                        if j is not None:
-                            preds[q][bi, j] += float(prob)
-                    used[q] += 1
-                total_transitions += 1
-                if max_transitions and total_transitions >= max_transitions:
-                    stop = True
-                    break
-            prevprev, prev = prev, pcur
-        if stop:
+        vals_arr = np.asarray(vals, dtype=np.int64)
+        if vals_arr.size == 0:
+            continue
+        arr = np.concatenate([history, vals_arr]) if history.size else vals_arr
+        if arr.size < 3:
+            history = arr[-2:].copy()
+            continue
+
+        prevprev_arr = arr[:-2]
+        prev_arr = arr[1:-1]
+        cur_arr = arr[2:]
+        g_prev_arr = prev_arr - prevprev_arr
+
+        if max_transitions:
+            remaining = int(max_transitions) - int(total_transitions)
+            if remaining <= 0:
+                break
+            if g_prev_arr.size > remaining:
+                prev_arr = prev_arr[:remaining]
+                cur_arr = cur_arr[:remaining]
+                g_prev_arr = g_prev_arr[:remaining]
+
+        n_events = int(g_prev_arr.size)
+        if n_events <= 0:
+            history = arr[-2:].copy()
+            continue
+
+        for q in mods:
+            n = len(residues[q])
+            if n == 0:
+                continue
+            bi_all = dense_index[q][np.mod(prev_arr, q)]
+            ai_all = dense_index[q][np.mod(cur_arr, q)]
+            valid = (bi_all >= 0) & (ai_all >= 0)
+            invalid = int(n_events - int(valid.sum()))
+            if invalid:
+                skipped_residue[q] += invalid
+            if not np.any(valid):
+                continue
+
+            g_valid = g_prev_arr[valid].astype(np.int64, copy=False)
+            bi_valid = bi_all[valid].astype(np.int64, copy=False)
+            ai_valid = ai_all[valid].astype(np.int64, copy=False)
+
+            key = g_valid * (n * n) + bi_valid * n + ai_valid
+            uniq, freq = np.unique(key, return_counts=True)
+            decoded_gp = uniq // (n * n)
+            rem = uniq - decoded_gp * (n * n)
+            decoded_bi = rem // n
+            decoded_ai = rem - decoded_bi * n
+
+            row_cache = transition_rows[q]
+            for gp, bi, ai, cnt in zip(decoded_gp, decoded_bi, decoded_ai, freq):
+                mat = row_cache.get(int(gp))
+                if mat is None:
+                    skipped_no_kernel[q] += int(cnt)
+                    continue
+                c = float(cnt)
+                counts[q][int(bi), int(ai)] += c
+                preds[q][int(bi), :] += c * mat[int(bi), :]
+                used[q] += int(cnt)
+
+        total_transitions += n_events
+        chunk_no += 1
+        if chunk_no % 5 == 0:
+            elapsed = time.time() - t0
+            rate = total_transitions / elapsed if elapsed > 0 else 0.0
+            print(f"[CHL2-OS] streamed {total_transitions:,} transitions in {elapsed:.1f}s ({rate:,.0f}/s)", flush=True)
+
+        history = arr[-2:].copy()
+        if max_transitions and total_transitions >= int(max_transitions):
             break
 
     summary_rows = []
     matrix_rows = []
     for q in mods:
         emp, row_counts = normalize_rows_from_counts(counts[q])
-        pred, pred_row_counts = normalize_rows_from_counts(preds[q])
+        pred, _pred_row_counts = normalize_rows_from_counts(preds[q])
+        chi = pearson_chi_square_fast(counts[q], preds[q], row_counts=row_counts)
         rc = row_cosine_weighted(emp, pred, row_counts)
         kl = matrix_kl_weighted(emp, pred, row_counts)
-        chi = pearson_chi_square_from_counts(counts[q], preds[q], row_counts=row_counts)
         fro = float(np.linalg.norm(emp - pred))
         l1_weighted = float(np.sum((row_counts / row_counts.sum()) * np.sum(np.abs(emp - pred), axis=1))) if row_counts.sum() > 0 else float("nan")
         sg_emp = spectral_gap_row_stochastic(emp)
         sg_pred = spectral_gap_row_stochastic(pred)
-        # Diagonal mass is the most transparent wrong-sign diagnostic in reduced
-        # prime-residue spaces.  For q=3 this is more informative than cosine.
-        total_row_mass = float(row_counts.sum())
-        diag_emp = float(np.trace(counts[q]) / total_row_mass) if total_row_mass > 0 else float("nan")
-        # Use expected counts after row normalization for the diagonal.
-        exp_for_diag = preds[q].copy().astype(float)
-        for ii, rcnt in enumerate(row_counts):
-            es = float(exp_for_diag[ii].sum())
-            if rcnt > 0 and es > 0:
-                exp_for_diag[ii] *= float(rcnt) / es
-        diag_model = float(np.trace(exp_for_diag) / total_row_mass) if total_row_mass > 0 else float("nan")
-        uniform_diag = 1.0 / float(len(residues[q])) if len(residues[q]) else float("nan")
-        summary_rows.append({
+        diag_emp = float(np.average(np.diag(emp), weights=row_counts)) if row_counts.sum() > 0 else float("nan")
+        diag_pred = float(np.average(np.diag(pred), weights=row_counts)) if row_counts.sum() > 0 else float("nan")
+        uniform_diag = 1.0 / len(residues[q]) if residues[q] else float("nan")
+        wrong_sign = False
+        if np.isfinite(diag_emp) and np.isfinite(diag_pred) and np.isfinite(uniform_diag):
+            wrong_sign = (diag_emp - uniform_diag) * (diag_pred - uniform_diag) < 0
+        summary_row = {
             "q": q,
             "model": model_name,
             "residue_mode": residue_mode,
@@ -1336,24 +1473,19 @@ def run_os_prime_residue_test(
             "weighted_row_L1": l1_weighted,
             "frobenius_norm": fro,
             "weighted_KL_empirical_to_model": kl,
-            "pearson_chi2": chi["pearson_chi2"],
-            "pearson_chi2_df": chi["pearson_chi2_df"],
-            "pearson_chi2_pvalue": chi["pearson_chi2_pvalue"],
-            "pearson_chi2_per_transition": chi["pearson_chi2_per_transition"],
-            "pearson_chi2_cells_used": chi["pearson_chi2_cells_used"],
-            "pearson_chi2_rows_used": chi["pearson_chi2_rows_used"],
-            "pearson_chi2_infinite_flag": chi["pearson_chi2_infinite_flag"],
-            "diagonal_probability_empirical": diag_emp,
-            "diagonal_probability_model": diag_model,
-            "uniform_diagonal_probability": uniform_diag,
-            "diagonal_wrong_sign_vs_uniform": bool((diag_emp - uniform_diag) * (diag_model - uniform_diag) < 0) if np.isfinite(diag_emp) and np.isfinite(diag_model) and np.isfinite(uniform_diag) else False,
             "spectral_gap_empirical": sg_emp,
             "spectral_gap_model": sg_pred,
             "spectral_gap_abs_error": abs(sg_pred - sg_emp) if np.isfinite(sg_emp) and np.isfinite(sg_pred) else float("nan"),
+            "diagonal_probability_empirical": diag_emp,
+            "diagonal_probability_model": diag_pred,
+            "uniform_diagonal_probability": uniform_diag,
+            "diagonal_wrong_sign_vs_uniform": bool(wrong_sign),
             "kernel_eta": meta.get("eta"),
             "kernel_target_mean_g2": meta.get("target_mean_g2"),
             "kernel_mean_g2_model": meta.get("mean_g2_model"),
-        })
+        }
+        summary_row.update(chi)
+        summary_rows.append(summary_row)
         res = residues[q]
         for i, b in enumerate(res):
             for j, a in enumerate(res):
@@ -1364,7 +1496,7 @@ def run_os_prime_residue_test(
                     "to_residue_a_current_prime": a,
                     "empirical_count": counts[q][i, j],
                     "empirical_prob": emp[i, j],
-                    "model_expected_count": preds[q][i, j],
+                    "model_expected_count": row_counts[i] * pred[i, j],
                     "model_prob": pred[i, j],
                     "row_count": row_counts[i],
                 })
@@ -1373,77 +1505,6 @@ def run_os_prime_residue_test(
     summary_df.to_csv(outdir / "chl2_os_prime_residue_summary.csv", index=False)
     matrix_df.to_csv(outdir / "chl2_os_prime_residue_transition_by_mod.csv", index=False)
     return summary_df, matrix_df
-
-def run_optional_os_prime_residue_test(
-    args: argparse.Namespace,
-    config: dict,
-    root: Path,
-    config_path: Path,
-    block_files: Sequence[Tuple[int, Path]],
-    primes: Sequence[int],
-    log_x: float,
-    path_cache_path: Optional[Path],
-    outdir: Path,
-) -> Tuple[Optional[pd.DataFrame], dict]:
-    """Run the absolute-prime-residue OS test if requested and always write status.
-
-    This makes skipped runs auditable.  A missing AUTO path no longer silently
-    produces only the generic interpretation line; the exact candidate paths and
-    reason are stored in chl2_os_prime_residue_status.json.
-    """
-    status = {
-        "requested": bool(args.prime_csv),
-        "prime_arg": args.prime_csv,
-        "resolved_prime_csv": None,
-        "candidate_prime_csv_paths": [str(x) for x in prime_csv_candidates(args.prime_csv, config, root, config_path=config_path)] if args.prime_csv else [],
-        "ran": False,
-        "skip_reason": None,
-        "model": None,
-        "mods": [int(x.strip()) for x in str(args.os_prime_mods).split(',') if x.strip()],
-        "summary_csv": None,
-        "matrix_csv": None,
-    }
-    os_summary: Optional[pd.DataFrame] = None
-    if not args.prime_csv:
-        status["skip_reason"] = "--prime-csv was not provided"
-    else:
-        prime_path = resolve_prime_csv(args.prime_csv, config, root, config_path=config_path)
-        status["resolved_prime_csv"] = str(prime_path) if prime_path is not None else None
-        if prime_path is None:
-            status["skip_reason"] = "--prime-csv was requested but no candidate path could be resolved"
-        elif not prime_path.exists():
-            status["skip_reason"] = f"resolved prime CSV does not exist: {prime_path}"
-            print(f"[CHL2-OS] prime-csv not found: {prime_path}; skipping", flush=True)
-        else:
-            os_model = args.os_model
-            if os_model == "auto":
-                os_model = "CHL2_path_excl_cond_eta" if args.path_exclusion else "CHL2_gap_excl_cond_eta"
-            status["model"] = os_model
-            os_mods = status["mods"]
-            os_summary, _os_matrix = run_os_prime_residue_test(
-                prime_csv=prime_path,
-                block_files=block_files,
-                primes=primes,
-                log_x=log_x,
-                model_name=os_model,
-                mods=os_mods,
-                residue_mode=args.os_residue_mode,
-                path_cache_file=path_cache_path,
-                max_transitions=int(args.os_max_transitions),
-                chunksize=int(args.os_prime_chunksize),
-                outdir=outdir,
-            )
-            status["ran"] = True
-            status["summary_csv"] = str(outdir / "chl2_os_prime_residue_summary.csv")
-            status["matrix_csv"] = str(outdir / "chl2_os_prime_residue_transition_by_mod.csv")
-            status["n_summary_rows"] = int(len(os_summary))
-            print("[CHL2-OS] wrote prime-residue OS outputs", flush=True)
-    with open(outdir / "chl2_os_prime_residue_status.json", "w", encoding="utf-8") as f:
-        json.dump(status, f, indent=2)
-    if args.require_os and not status.get("ran"):
-        raise RuntimeError(f"OS prime-residue test was required but did not run: {status.get('skip_reason')}")
-    return os_summary, status
-
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="CHL2 consecutive exclusion audit")
@@ -1457,7 +1518,8 @@ def main() -> None:
     ap.add_argument("--path-exclusion", action="store_true", help="Also compute expensive path-sensitive H4/H3 exclusion factor")
     ap.add_argument("--workers", type=int, default=max(1, (os.cpu_count() or 2) - 1), help="Number of worker processes. Use 0 for all detected cores.")
     ap.add_argument("--parallel-mode", choices=["auto", "blocks", "path", "none"], default="auto", help="auto: build path cache in parallel, then evaluate blocks in parallel; path: path cache parallel but block loop serial; blocks: block parallel; none: serial")
-    ap.add_argument("--path-chunk-size", type=int, default=5000, help="Unique (g1,g2) pairs per path-cache task")
+    ap.add_argument("--path-chunk-size", type=int, default=0, help="Unique (g1,g2) pairs per path-cache task; 0 enables automatic sizing")
+    ap.add_argument("--path-target-tasks-per-worker", type=int, default=6, help="Automatic path-cache chunks target tasks per worker")
     ap.add_argument("--cache-maxsize", type=int, default=2_000_000, help="Max singular-series cache entries per worker; 0 means unlimited")
     ap.add_argument("--path-cache-file", default=None, help="Optional persistent CSV/CSV.GZ cache for path-sensitive logE values")
     ap.add_argument("--path-cache-source", choices=["first", "all"], default="all", help="Use first block or all blocks to build unique-pair path cache")
@@ -1468,10 +1530,11 @@ def main() -> None:
     ap.add_argument("--os-residue-mode", choices=["reduced", "all"], default="reduced", help="Use reduced residue classes or all residues in OS matrices")
     ap.add_argument("--os-max-transitions", type=int, default=0, help="Optional cap on prime transitions for OS test; 0 means all")
     ap.add_argument("--os-prime-chunksize", type=int, default=1_000_000, help="Rows per chunk while streaming prime-csv")
-    ap.add_argument("--require-os", action="store_true", help="Fail the run if --prime-csv is requested but the absolute prime-residue OS test is skipped")
-    ap.add_argument("--os-only", action="store_true", help="Run only the absolute prime-residue OS diagnostic after path-cache setup; skip block metric evaluation")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
+    telemetry = telemetry_start()
+    telemetry["script"] = "chl2_consecutive_exclusion_audit"
+    telemetry["args"] = vars(args)
 
     config_path = Path(args.config)
     root = Path(args.root)
@@ -1513,6 +1576,7 @@ def main() -> None:
                 workers=path_workers,
                 chunk_size=args.path_chunk_size,
                 cache_maxsize=args.cache_maxsize,
+                target_tasks_per_worker=args.path_target_tasks_per_worker,
             )
             path_cache_path.parent.mkdir(parents=True, exist_ok=True)
             cache_df.to_csv(path_cache_path, index=False)
@@ -1550,14 +1614,13 @@ def main() -> None:
         "workers": workers,
         "parallel_mode": args.parallel_mode,
         "path_chunk_size": int(args.path_chunk_size),
+        "path_target_tasks_per_worker": int(args.path_target_tasks_per_worker),
         "cache_maxsize_per_worker": int(args.cache_maxsize),
         "path_cache_file": str(path_cache_path) if path_cache_path is not None else None,
         "path_cache_source": args.path_cache_source,
         "prime_csv": str(resolve_prime_csv(args.prime_csv, config, root, config_path=config_path)) if args.prime_csv else None,
-        "prime_csv_candidates": [str(x) for x in prime_csv_candidates(args.prime_csv, config, root, config_path=config_path)] if args.prime_csv else [],
+        "candidate_prime_csv_paths": [str(x) for x in prime_csv_candidates(args.prime_csv, config, root, config_path=config_path)] if args.prime_csv else [],
         "os_prime_mods": [int(x) for x in args.os_prime_mods.split(',') if x.strip()],
-        "os_only": bool(args.os_only),
-        "require_os": bool(args.require_os),
         "filters": filters,
         "models": model_list,
         "core_factor": "E_no_interior(g;x)=exp(-sum_{2<=u<=g-2,u even} S_Y({0,u,g})/S_Y({0,g})/log(x))",
@@ -1570,33 +1633,6 @@ def main() -> None:
     if args.dry_run:
         print(json.dumps(run_config, indent=2))
         print(pd.DataFrame(diag_rows).to_string(index=False))
-        return
-
-    if args.os_only:
-        os_summary, os_status = run_optional_os_prime_residue_test(
-            args=args,
-            config=config,
-            root=root,
-            config_path=config_path,
-            block_files=block_files,
-            primes=primes,
-            log_x=log_x,
-            path_cache_path=path_cache_path,
-            outdir=outdir,
-        )
-        interp = f"""# CHL2 absolute-prime-residue Oliver--Soundararajan diagnostic — OS-only run
-
-Requested: `{os_status.get('requested')}`.
-Ran: `{os_status.get('ran')}`.
-Resolved prime CSV: `{os_status.get('resolved_prime_csv')}`.
-Model: `{os_status.get('model')}`.
-Mods: `{os_status.get('mods')}`.
-
-{('Prime-residue OS summary was written to `chl2_os_prime_residue_summary.csv`.' if os_summary is not None else 'Prime-residue OS test did not run. See `chl2_os_prime_residue_status.json` for the exact skip reason.')}
-"""
-        with open(outdir / "chl2_interpretacion.md", "w", encoding="utf-8") as f:
-            f.write(interp)
-        print(f"[CHL2] wrote OS-only outputs to {outdir}")
         return
 
     all_eval_dicts: List[dict] = []
@@ -1635,17 +1671,32 @@ Mods: `{os_status.get('mods')}`.
     if all_excl_diag:
         pd.concat(all_excl_diag, ignore_index=True).to_csv(outdir / "chl2_exclusion_diagnostics.csv", index=False)
 
-    os_summary, os_status = run_optional_os_prime_residue_test(
-        args=args,
-        config=config,
-        root=root,
-        config_path=config_path,
-        block_files=block_files,
-        primes=primes,
-        log_x=log_x,
-        path_cache_path=path_cache_path,
-        outdir=outdir,
-    )
+    os_summary = None
+    if args.prime_csv:
+        prime_path = resolve_prime_csv(args.prime_csv, config, root, config_path=config_path)
+        if prime_path is None:
+            print("[CHL2-OS] prime-csv requested but no path could be resolved; skipping", flush=True)
+        elif not prime_path.exists():
+            print(f"[CHL2-OS] prime-csv not found: {prime_path}; skipping", flush=True)
+        else:
+            os_model = args.os_model
+            if os_model == "auto":
+                os_model = "CHL2_path_excl_cond_eta" if args.path_exclusion else "CHL2_gap_excl_cond_eta"
+            os_mods = [int(x.strip()) for x in args.os_prime_mods.split(',') if x.strip()]
+            os_summary, _os_matrix = run_os_prime_residue_test(
+                prime_csv=prime_path,
+                block_files=block_files,
+                primes=primes,
+                log_x=log_x,
+                model_name=os_model,
+                mods=os_mods,
+                residue_mode=args.os_residue_mode,
+                path_cache_file=path_cache_path,
+                max_transitions=int(args.os_max_transitions),
+                chunksize=int(args.os_prime_chunksize),
+                outdir=outdir,
+            )
+            print("[CHL2-OS] wrote prime-residue OS outputs", flush=True)
 
     best_lines = []
     for f, grp in summary.groupby("filter"):
@@ -1683,7 +1734,7 @@ This factor is parameter-free. It penalizes candidate gaps whose interior statis
 
 ## Absolute-prime-residue Oliver--Soundararajan diagnostic
 
-{('Prime-residue OS summary was written to `chl2_os_prime_residue_summary.csv`.' if os_summary is not None else 'Prime-residue OS test was not run. See `chl2_os_prime_residue_status.json`; reason: ' + str(os_status.get('skip_reason')))}
+{('Prime-residue OS summary was written to `chl2_os_prime_residue_summary.csv`.' if os_summary is not None else 'Prime-residue OS test was not run. Pass `--prime-csv AUTO` or a CSV path to enable it.')}
 
 ## Reading rule
 
@@ -1699,6 +1750,35 @@ The default exclusion factor conditions on the endpoints of the future gap only.
 """
     with open(outdir / "chl2_interpretacion.md", "w", encoding="utf-8") as f:
         f.write(interp)
+
+    write_telemetry(
+        outdir / "chl2_runtime_telemetry.json",
+        telemetry,
+        config_path=str(config_path),
+        output_dir=str(outdir),
+        blocks=list(blocks),
+        block_count=len(blocks),
+        Y=int(Y),
+        truncation_primes=list(map(int, primes)),
+        log_x=float(log_x),
+        filters=list(filters),
+        path_exclusion=bool(args.path_exclusion),
+        path_cache_file=str(path_cache_path) if path_cache_path is not None else None,
+        path_cache_exists=bool(path_cache_path.exists()) if path_cache_path is not None else False,
+        workers=int(workers),
+        parallel_mode=str(args.parallel_mode),
+        path_chunk_size=int(args.path_chunk_size),
+        path_target_tasks_per_worker=int(args.path_target_tasks_per_worker),
+        os_vectorized=True,
+        models=list(model_list),
+        metrics_rows=int(len(block_df)),
+        summary_rows=int(len(summary)),
+        gain_rows=int(len(gains)),
+        memory_rows=int(len(mem)),
+        os_executed=os_summary is not None,
+        os_summary_rows=int(len(os_summary)) if os_summary is not None else 0,
+        output_files=sorted([x.name for x in outdir.iterdir() if x.is_file()]),
+    )
     print(f"[CHL2] wrote outputs to {outdir}")
 
 

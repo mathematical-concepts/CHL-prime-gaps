@@ -22,3 +22,7 @@ python research_tools/chl2_hitk_oracle.py \
 This is a prioritization tool, not a primality test.  It is intended to reduce
 the number of classical primality checks needed in searches for rare
 constellations or large gaps.
+
+## Runtime telemetry
+
+The Hit@K oracle can write telemetry with `--telemetry-json`. If `--output-csv` is provided and `--telemetry-json` is omitted, a sidecar file named `<output>.telemetry.json` is written automatically. Telemetry records runtime, candidate count, top-K count, wheel-mask usage, and the command line used.
