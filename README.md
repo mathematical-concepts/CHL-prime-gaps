@@ -1,6 +1,6 @@
 # CHL-prime-gaps
 
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.20368549.svg)](https://doi.org/10.5281/zenodo.20368549)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.20368548.svg)](https://doi.org/10.5281/zenodo.20368548)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 Reproducible code for the **Conditional Hardy--Littlewood Markov kernel** for
@@ -22,8 +22,7 @@ classical asymptotic sieve level.  The no-interior-prime survival term is the
 first-order Poisson correction
 
 $$
-\Omega_Y^{\mathrm{path}}(g_1,g_2;x)
-=
+\Omega_Y^{\mathrm{path}}(g_1,g_2;x) = 
 \sum_{2\le u\le g_2-2,\ u\ \mathrm{even}}
 \frac{\mathfrak S_Y(\{0,g_1,g_1+u,g_1+g_2\})}
      {\mathfrak S_Y(\{0,g_1,g_1+g_2\})}\frac{1}{\log x}.
@@ -235,8 +234,8 @@ Zenodo archive: https://doi.org/10.5281/zenodo.20368549
   year      = {2026},
   publisher = {Zenodo},
   version   = {v1.5},
-  doi       = {10.5281/zenodo.20368549},
-  url       = {https://doi.org/10.5281/zenodo.20368549},
+  doi       = {10.5281/zenodo.20368548},
+  url       = {https://doi.org/10.5281/zenodo.20368548},
 }
 ```
 
