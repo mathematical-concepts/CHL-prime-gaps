@@ -1,7 +1,4 @@
 # CHL-prime-gaps
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.20368548.svg)](https://doi.org/10.5281/zenodo.20368548)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-
 
 **CHL-prime-gaps** contains the code and documentation for the CHL2 finite-window prime-gap model described in the whitepaper:
 
