@@ -28,10 +28,12 @@ No parameters are fitted.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import os
 import platform
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -98,6 +100,96 @@ def canonical_column(df: pd.DataFrame, candidates: Sequence[str], target: str) -
 
 def safe_log_ratio(num: float, den: float, eps: float = 1e-15) -> float:
     return float(math.log((num + eps) / (den + eps)))
+
+
+def safe_to_markdown(df: pd.DataFrame, index: bool = False) -> str:
+    """Render Markdown when pandas' optional tabulate dependency is present."""
+    try:
+        return df.to_markdown(index=index)
+    except Exception:
+        return "```\n" + df.to_string(index=index) + "\n```"
+
+
+
+def sha256_file(path: str | Path, chunk_size: int = 1024 * 1024) -> str:
+    """Return the SHA-256 digest of a file without loading it into memory."""
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for chunk in iter(lambda: handle.read(int(chunk_size)), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def file_provenance(path: str | Path, *, hash_content: bool) -> dict:
+    """Return stable metadata for one input or script file."""
+    p = Path(path)
+    record: dict = {"path": str(p), "exists": bool(p.is_file())}
+    if not p.is_file():
+        return record
+    stat = p.stat()
+    record.update({
+        "size_bytes": int(stat.st_size),
+        "mtime_ns": int(stat.st_mtime_ns),
+        "sha256": sha256_file(p) if hash_content else None,
+    })
+    return record
+
+
+def git_provenance(repo_root: str | Path) -> dict:
+    """Read commit and tracked-worktree status without requiring Git."""
+    root = Path(repo_root)
+
+    def run_git(*args: str) -> str | None:
+        try:
+            proc = subprocess.run(
+                ["git", "-C", str(root), *args],
+                check=False,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+        except OSError:
+            return None
+        if proc.returncode != 0:
+            return None
+        return proc.stdout.strip()
+
+    commit = run_git("rev-parse", "HEAD")
+    branch = run_git("rev-parse", "--abbrev-ref", "HEAD")
+    describe = run_git("describe", "--tags", "--always", "--dirty")
+    status = run_git("status", "--porcelain", "--untracked-files=no")
+    tracked_changes = None if status is None else ([line for line in status.splitlines() if line] if status else [])
+    return {
+        "repo_root": str(root),
+        "available": commit is not None,
+        "commit": commit,
+        "branch": branch,
+        "describe": describe,
+        "tracked_worktree_clean": None if tracked_changes is None else not bool(tracked_changes),
+        "tracked_changes": tracked_changes,
+    }
+
+
+def build_provenance(
+    *,
+    repo_root: str | Path,
+    input_paths: Mapping[str, str | Path | None],
+    hash_inputs: bool,
+) -> dict:
+    """Build the release provenance payload embedded in JSON outputs."""
+    inputs = {
+        str(label): file_provenance(path, hash_content=bool(hash_inputs))
+        for label, path in sorted(input_paths.items())
+        if path not in (None, "")
+    }
+    return {
+        "schema": "chl-release-provenance@1",
+        "script": file_provenance(Path(__file__).resolve(), hash_content=True),
+        "git": git_provenance(repo_root),
+        "input_hashes_enabled": bool(hash_inputs),
+        "inputs": inputs,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -445,21 +537,47 @@ def solve_eta(df: pd.DataFrame, target: float) -> float:
     return (lo + hi) / 2
 
 
-def model_gap_residue_population(df: pd.DataFrame, q: int) -> Tuple[Dict[int, float], float]:
+def model_gap_residue_populations(
+    df: pd.DataFrame,
+    mods: Sequence[int],
+) -> Tuple[Dict[int, Dict[int, float]], float, float, float]:
+    """Compute one anchored CHL2 mass distribution and project it modulo q.
+
+    The terminal anchor ``eta`` is a property of the block/stratum, not of the
+    diagnostic modulus.  It is therefore solved once and reused for every q.
+    """
     H = df["H"].to_numpy(dtype=float)
-    target = float(np.sum(H * df["g2"].to_numpy(dtype=float)) / np.sum(H))
+    total_events = float(np.sum(H))
+    if total_events <= 0:
+        raise ValueError("block has non-positive total event mass")
+    target = float(np.sum(H * df["g2"].to_numpy(dtype=float)) / total_events)
     eta = solve_eta(df, target)
     masses = conditional_masses(df, eta)
-    total = float(np.sum(masses))
-    residues = df["g2"].to_numpy(dtype=np.int64) % q
-    probs = {r: 0.0 for r in range(q)}
-    if total > 0:
-        for r in range(q):
-            probs[r] = float(np.sum(masses[residues == r]) / total)
-    return probs, eta
+    total_mass = float(np.sum(masses))
+    if total_mass <= 0:
+        raise ValueError("CHL2 conditional masses sum to zero")
+    g2 = df["g2"].to_numpy(dtype=np.int64)
+    by_q: Dict[int, Dict[int, float]] = {}
+    for q0 in mods:
+        q = int(q0)
+        residues = g2 % q
+        probs = {r: float(np.sum(masses[residues == r]) / total_mass) for r in range(q)}
+        z = float(sum(probs.values()))
+        if not np.isfinite(z) or abs(z - 1.0) > 1e-10:
+            raise ValueError(f"gap-residue population does not normalize for q={q}: {z}")
+        by_q[q] = probs
+    return by_q, float(eta), float(target), total_events
 
 
-def compute_model_lift_from_blocks(config_path: str, root: str, blocks: Sequence[int], mods: Sequence[int], Y: int, log_x: float, path_cache_file: Optional[str]) -> Tuple[pd.DataFrame, pd.DataFrame]:
+def compute_model_lift_from_blocks(
+    config_path: str,
+    root: str,
+    blocks: Sequence[int],
+    mods: Sequence[int],
+    Y: int,
+    log_x: float,
+    path_cache_file: Optional[str],
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
     rootp = Path(root)
     cfg = load_json(config_path)
     cache = load_path_cache(path_cache_file)
@@ -468,66 +586,177 @@ def compute_model_lift_from_blocks(config_path: str, root: str, blocks: Sequence
     event_rows: List[dict] = []
     for b in blocks:
         label = f"B{b:02d}"
-        df = enrich_chl2_terms(read_block(resolve_block_path(rootp, cfg, b)), Y, log_x, cache)
+        block_path = resolve_block_path(rootp, cfg, b)
+        df = enrich_chl2_terms(read_block(block_path), Y, log_x, cache)
+        probs_by_q, eta, target_mean, events = model_gap_residue_populations(df, mods)
         for q in mods:
-            probs, eta = model_gap_residue_population(df, q)
-            events = float(df["H"].sum())
-            event_rows.append({"block": label, "q": q, "events": events})
+            q = int(q)
+            probs = probs_by_q[q]
+            event_rows.append({
+                "block": label,
+                "q": q,
+                "events": events,
+                "eta": eta,
+                "target_mean_g2": target_mean,
+                "source_file": str(block_path),
+            })
             for r in range(q):
-                pop_rows.append({"block": label, "q": q, "source": "chl2_gap_population", "gap_residue": r, "probability": probs.get(r, 0.0)})
+                pop_rows.append({
+                    "block": label,
+                    "q": q,
+                    "source": "chl2_gap_population",
+                    "gap_residue": r,
+                    "probability": probs.get(r, 0.0),
+                    "events": events,
+                    "eta": eta,
+                    "target_mean_g2": target_mean,
+                    "source_file": str(block_path),
+                })
             mat = transition_from_gap_residue_population(probs, q, lift_kind="orientation")
             mat.insert(0, "block", label)
             mat.insert(1, "source", "chl2_gap_population")
             mat.insert(2, "lift_kind", "orientation")
             lift_rows.append(mat)
+
+    if not lift_rows:
+        raise ValueError("no orientation-lift matrices were produced")
     pop = pd.DataFrame(pop_rows)
     lift = pd.concat(lift_rows, ignore_index=True)
-    # ALL aggregate, weighted by block events.
-    if pop_rows:
-        ev = pd.DataFrame(event_rows)
-        pp = pop.merge(ev, on=["block", "q"], how="left")
-        pp["weighted"] = pp["probability"] * pp["events"]
-        agg = pp.groupby(["q", "source", "gap_residue"], as_index=False).agg(weighted=("weighted", "sum"), events=("events", "sum"))
-        agg["probability"] = agg["weighted"] / agg["events"]
-        agg["block"] = "ALL"
-        pop = pd.concat([pop, agg[["block", "q", "source", "gap_residue", "probability"]]], ignore_index=True)
-        for (q, source), sub in agg.groupby(["q", "source"]):
-            probs = {int(r.gap_residue): float(r.probability) for r in sub.itertuples(index=False)}
-            mat = transition_from_gap_residue_population(probs, int(q), lift_kind="orientation")
-            mat.insert(0, "block", "ALL")
-            mat.insert(1, "source", source)
-            mat.insert(2, "lift_kind", "orientation")
-            lift = pd.concat([lift, mat], ignore_index=True)
+
+    # ALL aggregate: first aggregate the gap population by true block event mass,
+    # then apply the orientation lift once to that global population.
+    ev = pd.DataFrame(event_rows)
+    pp = pop[["block", "q", "source", "gap_residue", "probability"]].merge(
+        ev[["block", "q", "events"]], on=["block", "q"], how="left", validate="many_to_one"
+    )
+    pp["weighted"] = pp["probability"] * pp["events"]
+    agg = pp.groupby(["q", "source", "gap_residue"], as_index=False).agg(
+        weighted=("weighted", "sum"), events=("events", "sum")
+    )
+    agg["probability"] = agg["weighted"] / agg["events"]
+    agg["block"] = "ALL"
+    agg["eta"] = np.nan
+    agg["target_mean_g2"] = np.nan
+    agg["source_file"] = "event_weighted_B01-B10"
+    pop = pd.concat([
+        pop,
+        agg[[
+            "block", "q", "source", "gap_residue", "probability", "events",
+            "eta", "target_mean_g2", "source_file",
+        ]],
+    ], ignore_index=True)
+
+    all_lifts: List[pd.DataFrame] = []
+    for (q, source), sub in agg.groupby(["q", "source"]):
+        probs = {int(r.gap_residue): float(r.probability) for r in sub.itertuples(index=False)}
+        mat = transition_from_gap_residue_population(probs, int(q), lift_kind="orientation")
+        mat.insert(0, "block", "ALL")
+        mat.insert(1, "source", source)
+        mat.insert(2, "lift_kind", "orientation")
+        all_lifts.append(mat)
+    if all_lifts:
+        lift = pd.concat([lift, *all_lifts], ignore_index=True)
     lift = lift.rename(columns={"probability": "model_probability"})
     return lift, pop
-
 
 # ---------------------------------------------------------------------------
 # Diagnostics and outputs
 # ---------------------------------------------------------------------------
 
 
-def combine_empirical_and_model(emp: pd.DataFrame, model: pd.DataFrame, mods: Sequence[int], blocks: Optional[Sequence[str]] = None) -> pd.DataFrame:
+def _validate_complete_matrix_cells(df: pd.DataFrame, q: int, *, label: str) -> None:
+    rr = reduced_residues(int(q))
+    expected = {(b, a) for b in rr for a in rr}
+    keys = list(zip(df["from_residue"].astype(int), df["to_residue"].astype(int)))
+    if len(keys) != len(set(keys)):
+        raise ValueError(f"duplicate matrix cells for {label}, q={q}")
+    actual = set(keys)
+    if actual != expected:
+        missing = sorted(expected - actual)
+        extra = sorted(actual - expected)
+        raise ValueError(f"incomplete matrix for {label}, q={q}; missing={missing[:8]}, extra={extra[:8]}")
+
+
+def ensure_all_empirical(emp: pd.DataFrame) -> pd.DataFrame:
+    """Append a count-exact ALL empirical matrix when only blocks are present."""
+    out = emp.copy()
+    if (out["block"].astype(str) == "ALL").any():
+        return out
+    base = out[out["block"].astype(str) != "ALL"].copy()
+    agg = base.groupby(["q", "from_residue", "to_residue"], as_index=False).agg(
+        empirical_count=("empirical_count", "sum")
+    )
+    row = agg.groupby(["q", "from_residue"])["empirical_count"].transform("sum")
+    agg["row_count"] = row
+    agg["empirical_probability"] = np.divide(
+        agg["empirical_count"], row, out=np.zeros(len(agg), dtype=float), where=row.to_numpy() > 0
+    )
+    agg["block"] = "ALL"
+    return pd.concat([
+        out,
+        agg[["block", "q", "from_residue", "to_residue", "empirical_count", "row_count", "empirical_probability"]],
+    ], ignore_index=True)
+
+
+def ensure_all_model(model: pd.DataFrame, empirical: pd.DataFrame) -> pd.DataFrame:
+    """Append ALL model matrices using empirical row-mass weighting if absent."""
+    out = model.copy()
+    if (out["block"].astype(str) == "ALL").any():
+        return out
+    emp_blocks = empirical[empirical["block"].astype(str) != "ALL"]
+    row_counts = emp_blocks[["block", "q", "from_residue", "row_count"]].drop_duplicates()
+    work = out.merge(row_counts, on=["block", "q", "from_residue"], how="left", validate="many_to_one")
+    if work["row_count"].isna().any():
+        bad = work.loc[work["row_count"].isna(), ["block", "q", "from_residue"]].drop_duplicates()
+        raise ValueError(f"cannot aggregate model ALL; missing empirical row counts: {bad.head().to_dict('records')}")
+    work["expected"] = work["model_probability"].astype(float) * work["row_count"].astype(float)
+    agg = work.groupby(["q", "from_residue", "to_residue"], as_index=False).agg(expected=("expected", "sum"))
+    z = agg.groupby(["q", "from_residue"])["expected"].transform("sum")
+    agg["model_probability"] = np.divide(
+        agg["expected"], z, out=np.zeros(len(agg), dtype=float), where=z.to_numpy() > 0
+    )
+    agg["block"] = "ALL"
+    return pd.concat([
+        out,
+        agg[["block", "q", "from_residue", "to_residue", "model_probability"]],
+    ], ignore_index=True)
+
+
+def combine_empirical_and_model(
+    emp: pd.DataFrame,
+    model: pd.DataFrame,
+    mods: Sequence[int],
+    blocks: Optional[Sequence[str]] = None,
+) -> pd.DataFrame:
     if blocks is not None:
-        emp = emp[emp["block"].astype(str).isin([str(b) for b in blocks])]
-        model = model[model["block"].astype(str).isin([str(b) for b in blocks])]
+        wanted = [str(b) for b in blocks]
+        emp = emp[emp["block"].astype(str).isin(wanted)]
+        model = model[model["block"].astype(str).isin(wanted)]
     rows = []
-    for (block, q), esub in emp.groupby(["block", "q"]):
-        q = int(q)
+    missing_groups: List[Tuple[str, int]] = []
+    for (block, q0), esub in emp.groupby(["block", "q"]):
+        q = int(q0)
         if q not in mods:
             continue
         msub = model[(model["block"].astype(str) == str(block)) & (model["q"].astype(int) == q)]
         if msub.empty:
+            missing_groups.append((str(block), q))
             continue
-        # Merge by cells.
-        merged = esub.merge(msub[["q", "from_residue", "to_residue", "model_probability"]], on=["q", "from_residue", "to_residue"], how="left")
+        _validate_complete_matrix_cells(esub, q, label=f"empirical block={block}")
+        _validate_complete_matrix_cells(msub, q, label=f"model block={block}")
+        merged = esub.merge(
+            msub[["q", "from_residue", "to_residue", "model_probability"]],
+            on=["q", "from_residue", "to_residue"],
+            how="left",
+            validate="one_to_one",
+        )
         if merged["model_probability"].isna().any():
             raise ValueError(f"missing model probability for block={block}, q={q}")
         for r in merged.itertuples(index=False):
             row_count = float(r.row_count)
             mp = float(r.model_probability)
             rows.append({
-                "block": block,
+                "block": str(block),
                 "q": q,
                 "from_residue": int(r.from_residue),
                 "to_residue": int(r.to_residue),
@@ -538,8 +767,9 @@ def combine_empirical_and_model(emp: pd.DataFrame, model: pd.DataFrame, mods: Se
                 "model_expected_count": row_count * mp,
                 "is_diagonal": int(r.from_residue == r.to_residue),
             })
+    if missing_groups:
+        raise ValueError(f"model matrices missing for empirical groups: {missing_groups}")
     return pd.DataFrame(rows)
-
 
 def summarize_transition(combined: pd.DataFrame) -> pd.DataFrame:
     rows = []
@@ -586,10 +816,20 @@ def summarize_transition(combined: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def compare_with_old(old_model_path: Optional[str], emp: pd.DataFrame, new_model: pd.DataFrame, mods: Sequence[int]) -> pd.DataFrame:
+def compare_with_old(
+    old_model_path: Optional[str],
+    emp: pd.DataFrame,
+    new_model: pd.DataFrame,
+    mods: Sequence[int],
+    *,
+    old_model_label: str,
+    oriented_model_label: str,
+) -> pd.DataFrame:
     if not old_model_path:
         return pd.DataFrame()
     old = normalize_old_model_direct(old_model_path)
+    old = ensure_all_model(old, emp)
+    new_model = ensure_all_model(new_model, emp)
     old_combined = combine_empirical_and_model(emp, old, mods)
     new_combined = combine_empirical_and_model(emp, new_model, mods)
     old_sum = summarize_transition(old_combined)
@@ -598,12 +838,14 @@ def compare_with_old(old_model_path: Optional[str], emp: pd.DataFrame, new_model
     for (block, q), nrow in new_sum.groupby(["block", "q"]):
         osub = old_sum[(old_sum["block"].astype(str) == str(block)) & (old_sum["q"].astype(int) == int(q))]
         if osub.empty:
-            continue
+            raise ValueError(f"old summary missing block={block}, q={q}")
         o = osub.iloc[0]
         n = nrow.iloc[0]
         rows.append({
-            "block": block,
+            "block": str(block),
             "q": int(q),
+            "old_model_label": old_model_label,
+            "oriented_model_label": oriented_model_label,
             "old_kl": float(o["kl_empirical_to_model_weighted"]),
             "oriented_kl": float(n["kl_empirical_to_model_weighted"]),
             "delta_kl_old_minus_oriented": float(o["kl_empirical_to_model_weighted"] - n["kl_empirical_to_model_weighted"]),
@@ -617,12 +859,82 @@ def compare_with_old(old_model_path: Optional[str], emp: pd.DataFrame, new_model
         })
     return pd.DataFrame(rows)
 
+def _coerce_bool_series(series: pd.Series) -> pd.Series:
+    """Coerce booleans stored as bool, 0/1, or common text forms."""
+    if pd.api.types.is_bool_dtype(series):
+        return series.fillna(False).astype(bool)
+    numeric = pd.to_numeric(series, errors="coerce")
+    out = numeric.eq(1)
+    unresolved = numeric.isna()
+    if unresolved.any():
+        text = series.astype(str).str.strip().str.lower()
+        out.loc[unresolved] = text.loc[unresolved].isin({"true", "t", "yes", "y"})
+    return out.fillna(False).astype(bool)
 
-def write_interpretation(outdir: Path, summary: pd.DataFrame, old_vs_new: pd.DataFrame) -> None:
+
+def summarize_replacement_outcome(old_vs_new: pd.DataFrame) -> dict:
+    """Return the exact counts used by the generated interpretation."""
+    result: dict = {
+        "comparison_available": False,
+        "n_comparisons": 0,
+        "kl_improved_count": 0,
+        "l1_improved_count": 0,
+        "higher_modulus_comparisons": 0,
+        "higher_modulus_kl_improved_count": 0,
+        "higher_modulus_l1_improved_count": 0,
+        "q3_comparisons": 0,
+        "q3_old_wrong_sign_count": 0,
+        "q3_oriented_wrong_sign_count": 0,
+        "replacement_gate_pass": False,
+    }
+    if old_vs_new.empty:
+        return result
+
+    work = old_vs_new.copy()
+    for col in ["q", "old_kl", "oriented_kl", "old_l1", "oriented_l1"]:
+        if col in work.columns:
+            work[col] = pd.to_numeric(work[col], errors="coerce")
+    work = work.dropna(subset=["q", "old_kl", "oriented_kl", "old_l1", "oriented_l1"])
+    if work.empty:
+        return result
+
+    kl_improved = work["oriented_kl"] < work["old_kl"]
+    l1_improved = work["oriented_l1"] < work["old_l1"]
+    q3 = work[work["q"].astype(int) == 3].copy()
+    higher = work[work["q"].astype(int) != 3].copy()
+    old_wrong = _coerce_bool_series(q3["old_wrong_sign"]) if "old_wrong_sign" in q3.columns else pd.Series(False, index=q3.index)
+    oriented_wrong = _coerce_bool_series(q3["oriented_wrong_sign"]) if "oriented_wrong_sign" in q3.columns else pd.Series(False, index=q3.index)
+
+    result.update({
+        "comparison_available": True,
+        "n_comparisons": int(len(work)),
+        "kl_improved_count": int(kl_improved.sum()),
+        "l1_improved_count": int(l1_improved.sum()),
+        "higher_modulus_comparisons": int(len(higher)),
+        "higher_modulus_kl_improved_count": int((higher["oriented_kl"] < higher["old_kl"]).sum()),
+        "higher_modulus_l1_improved_count": int((higher["oriented_l1"] < higher["old_l1"]).sum()),
+        "q3_comparisons": int(len(q3)),
+        "q3_old_wrong_sign_count": int(old_wrong.sum()),
+        "q3_oriented_wrong_sign_count": int(oriented_wrong.sum()),
+    })
+    result["replacement_gate_pass"] = bool(
+        len(work) > 0
+        and int(kl_improved.sum()) == len(work)
+        and int(l1_improved.sum()) == len(work)
+        and len(q3) > 0
+        and int(old_wrong.sum()) == len(q3)
+        and int(oriented_wrong.sum()) == 0
+    )
+    return result
+
+
+def write_interpretation(outdir: Path, summary: pd.DataFrame, old_vs_new: pd.DataFrame) -> dict:
+    """Write a result-driven report and return the replacement gate summary."""
     lines: List[str] = []
+    outcome = summarize_replacement_outcome(old_vs_new)
     lines.append("# CHL4-D5 Orientation-Lift OS Replacement")
     lines.append("")
-    lines.append("This audit replaces the previous direct CHL2-induced OS diagnostic with an orientation-lift construction from CHL2 gap-residue populations.")
+    lines.append("This audit compares the reproducible absolute-prime OS previous-gap-conditioned control with an orientation-lift construction from CHL2 gap-residue populations. It does not identify that control with `naive_table4_legacy`.")
     lines.append("")
     all_rows = summary[summary["block"].astype(str) == "ALL"] if "block" in summary.columns else summary
     if not all_rows.empty:
@@ -630,7 +942,7 @@ def write_interpretation(outdir: Path, summary: pd.DataFrame, old_vs_new: pd.Dat
         cols = [c for c in cols if c in all_rows.columns]
         lines.append("## Oriented OS summary, ALL")
         lines.append("")
-        lines.append(all_rows[cols].to_markdown(index=False))
+        lines.append(safe_to_markdown(all_rows[cols], index=False))
         lines.append("")
     q3 = all_rows[all_rows["q"].astype(int) == 3] if not all_rows.empty else pd.DataFrame()
     if not q3.empty:
@@ -646,15 +958,42 @@ def write_interpretation(outdir: Path, summary: pd.DataFrame, old_vs_new: pd.Dat
     if not old_vs_new.empty:
         all_old = old_vs_new[old_vs_new["block"].astype(str) == "ALL"]
         if not all_old.empty:
-            lines.append("## Old direct OS versus orientation-lift OS, ALL")
+            lines.append("## Previous-gap-conditioned OS versus orientation-lift OS, ALL")
             lines.append("")
             cols = ["q", "old_kl", "oriented_kl", "delta_kl_old_minus_oriented", "emp_diag", "old_diag_model", "oriented_diag_model", "old_wrong_sign", "oriented_wrong_sign"]
-            lines.append(all_old[cols].to_markdown(index=False))
+            lines.append(safe_to_markdown(all_old[cols], index=False))
             lines.append("")
     lines.append("## Interpretation")
     lines.append("")
-    lines.append("If the oriented matrix removes the $q=3$ wrong-sign flag while preserving or improving the diagnostics for $q=5,7,11,13$, the old OS discrepancy should be treated as an orientation-lift defect rather than a failure of the CHL2 gap kernel.")
+    if outcome["comparison_available"]:
+        lines.append(
+            f"The orientation lift improves weighted KL in `{outcome['kl_improved_count']}/{outcome['n_comparisons']}` "
+            f"and weighted L1 in `{outcome['l1_improved_count']}/{outcome['n_comparisons']}` audited block-modulus comparisons."
+        )
+        if outcome["higher_modulus_comparisons"]:
+            lines.append(
+                f"For q=5,7,11,13, KL improves in `{outcome['higher_modulus_kl_improved_count']}/{outcome['higher_modulus_comparisons']}` "
+                f"and L1 in `{outcome['higher_modulus_l1_improved_count']}/{outcome['higher_modulus_comparisons']}` comparisons."
+            )
+        if outcome["q3_comparisons"]:
+            lines.append(
+                f"For q=3, the previous-gap-conditioned control has the wrong diagonal sign in "
+                f"`{outcome['q3_old_wrong_sign_count']}/{outcome['q3_comparisons']}` comparisons, whereas the orientation lift has it in "
+                f"`{outcome['q3_oriented_wrong_sign_count']}/{outcome['q3_comparisons']}`."
+            )
+        if outcome["replacement_gate_pass"]:
+            lines.append(
+                "The replacement gate passes in this run. These results support treating the discrepancy of the reproducible previous-gap-conditioned OS control as an orientation-projection defect rather than as a failure of the CHL2 gap kernel."
+            )
+        else:
+            lines.append(
+                "The full replacement gate does not pass in this run; the direct-control discrepancy should therefore not be attributed solely to orientation projection."
+            )
+    else:
+        lines.append("No previous-gap-conditioned model matrix was supplied, so this run does not support an old-versus-oriented replacement claim.")
+    lines.append("The historical provenance of `naive_table4_legacy` remains unresolved and is not inferred from this audit.")
     (outdir / "chl4d5_interpretacion.md").write_text("\n".join(lines), encoding="utf-8")
+    return outcome
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
@@ -664,13 +1003,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ap.add_argument("--output-dir", required=True)
     ap.add_argument("--mode", default="from-blocks", choices=["from-blocks", "from-d4-lift"], help="How to obtain the oriented CHL2 matrix.")
     ap.add_argument("--d4-lift-csv", default=None, help="Existing D4 orientation lift matrix CSV.")
-    ap.add_argument("--old-model-matrix-csv", default=None, help="Optional old direct CHL2 OS model matrix for comparison.")
+    ap.add_argument("--old-model-matrix-csv", default=None, help="Optional reproducible direct OS model matrix for comparison.")
+    ap.add_argument("--old-model-label", default="absolute_prime_os_previous_gap_conditioned")
+    ap.add_argument("--oriented-model-label", default="orientation_lift_chl2_gap_population")
     ap.add_argument("--config", default=None)
     ap.add_argument("--root", default=".")
     ap.add_argument("--blocks", default="1-10")
     ap.add_argument("--Y", type=int, default=47)
-    ap.add_argument("--log-x", type=float, default=25.328436)
+    ap.add_argument("--log-x", type=float, default=25.328436022934504)
     ap.add_argument("--path-cache-file", default=None)
+    ap.add_argument("--hash-inputs", action=argparse.BooleanOptionalAction, default=False, help="Compute SHA-256 for every declared input and embed it in config/telemetry.")
     args = ap.parse_args(argv)
 
     t0 = time.perf_counter()
@@ -680,6 +1022,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     empirical = normalize_empirical_direct(args.empirical_matrix_csv)
     empirical = empirical[empirical["q"].astype(int).isin(mods)].copy()
+    empirical = ensure_all_empirical(empirical)
 
     if args.mode == "from-d4-lift":
         if not args.d4_lift_csv:
@@ -699,19 +1042,58 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             path_cache_file=args.path_cache_file,
         )
     model = model[model["q"].astype(int).isin(mods)].copy()
+    model = ensure_all_model(model, empirical)
 
     combined = combine_empirical_and_model(empirical, model, mods)
     summary = summarize_transition(combined)
-    old_vs_new = compare_with_old(args.old_model_matrix_csv, empirical, model, mods) if args.old_model_matrix_csv else pd.DataFrame()
+    old_vs_new = (
+        compare_with_old(
+            args.old_model_matrix_csv,
+            empirical,
+            model,
+            mods,
+            old_model_label=args.old_model_label,
+            oriented_model_label=args.oriented_model_label,
+        )
+        if args.old_model_matrix_csv
+        else pd.DataFrame()
+    )
 
+    input_paths: dict[str, str | Path | None] = {
+        "empirical_matrix_csv": args.empirical_matrix_csv,
+        "old_model_matrix_csv": args.old_model_matrix_csv,
+        "d4_lift_csv": args.d4_lift_csv,
+        "config": args.config,
+        "path_cache_file": args.path_cache_file,
+    }
+    if not gap_pop.empty and {"block", "source_file"}.issubset(gap_pop.columns):
+        source_rows = gap_pop[gap_pop["block"].astype(str) != "ALL"][["block", "source_file"]].drop_duplicates()
+        for row in source_rows.itertuples(index=False):
+            source_path = str(row.source_file)
+            if source_path and source_path != "nan":
+                input_paths[f"parent_wide_{row.block}"] = source_path
+    provenance = build_provenance(
+        repo_root=args.root,
+        input_paths=input_paths,
+        hash_inputs=args.hash_inputs,
+    )
+
+    combined.insert(2, "model_label", args.oriented_model_label)
+    output_files: List[str] = []
     combined.to_csv(outdir / "chl2_os_oriented_prime_residue_transition_by_mod.csv", index=False)
+    output_files.append("chl2_os_oriented_prime_residue_transition_by_mod.csv")
     summary.to_csv(outdir / "chl2_os_oriented_prime_residue_summary.csv", index=False)
+    output_files.append("chl2_os_oriented_prime_residue_summary.csv")
     if not old_vs_new.empty:
         old_vs_new.to_csv(outdir / "chl2_os_old_direct_vs_oriented.csv", index=False)
+        output_files.append("chl2_os_old_direct_vs_oriented.csv")
     if not gap_pop.empty:
         gap_pop.to_csv(outdir / "chl2_os_oriented_gap_residue_populations.csv", index=False)
+        output_files.append("chl2_os_oriented_gap_residue_populations.csv")
     model.to_csv(outdir / "chl2_os_oriented_model_matrices.csv", index=False)
-    write_interpretation(outdir, summary, old_vs_new)
+    output_files.append("chl2_os_oriented_model_matrices.csv")
+    interpretation_summary = write_interpretation(outdir, summary, old_vs_new)
+    output_files.append("chl4d5_interpretacion.md")
 
     telemetry = {
         "script": "chl4d5_orientation_lift_os_replacement.py",
@@ -725,15 +1107,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "n_transition_rows": int(len(combined)),
         "n_summary_rows": int(len(summary)),
         "n_old_vs_new_rows": int(len(old_vs_new)),
-        "output_files": [
-            "chl2_os_oriented_prime_residue_transition_by_mod.csv",
-            "chl2_os_oriented_prime_residue_summary.csv",
-            "chl2_os_oriented_model_matrices.csv",
-            "chl4d5_interpretacion.md",
-        ],
+        "n_gap_population_rows": int(len(gap_pop)),
+        "n_model_matrix_rows": int(len(model)),
+        "contains_all_aggregate": bool((summary["block"].astype(str) == "ALL").any()),
+        "old_model_label": args.old_model_label,
+        "oriented_model_label": args.oriented_model_label,
+        "interpretation_summary": interpretation_summary,
+        "provenance": provenance,
+        "output_files": output_files,
     }
     (outdir / "chl4d5_runtime_telemetry.json").write_text(json.dumps(telemetry, indent=2), encoding="utf-8")
-    (outdir / "chl4d5_config.json").write_text(json.dumps(vars(args), indent=2), encoding="utf-8")
+    config_payload = dict(vars(args))
+    config_payload["provenance"] = provenance
+    (outdir / "chl4d5_config.json").write_text(json.dumps(config_payload, indent=2), encoding="utf-8")
     return 0
 
 

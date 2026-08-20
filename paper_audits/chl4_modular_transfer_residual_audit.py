@@ -29,15 +29,17 @@ stage that decides whether CHL4 has a stable object to explain.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import os
+import subprocess
 import sys
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Iterable, Mapping, Sequence
 
 import numpy as np
 import pandas as pd
@@ -139,6 +141,88 @@ def safe_to_markdown(df: pd.DataFrame, index: bool = False) -> str:
         return df.to_markdown(index=index)
     except Exception:
         return "```\n" + df.to_string(index=index) + "\n```"
+
+
+
+def sha256_file(path: str | Path, chunk_size: int = 1024 * 1024) -> str:
+    """Return the SHA-256 digest of a file without loading it into memory."""
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for chunk in iter(lambda: handle.read(int(chunk_size)), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def file_provenance(path: str | Path, *, hash_content: bool) -> dict:
+    """Return stable metadata for one input or script file."""
+    p = Path(path)
+    record: dict = {"path": str(p), "exists": bool(p.is_file())}
+    if not p.is_file():
+        return record
+    stat = p.stat()
+    record.update({
+        "size_bytes": int(stat.st_size),
+        "mtime_ns": int(stat.st_mtime_ns),
+        "sha256": sha256_file(p) if hash_content else None,
+    })
+    return record
+
+
+def git_provenance(repo_root: str | Path) -> dict:
+    """Read commit and tracked-worktree status without requiring Git."""
+    root = Path(repo_root)
+
+    def run_git(*args: str) -> str | None:
+        try:
+            proc = subprocess.run(
+                ["git", "-C", str(root), *args],
+                check=False,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+        except OSError:
+            return None
+        if proc.returncode != 0:
+            return None
+        return proc.stdout.strip()
+
+    commit = run_git("rev-parse", "HEAD")
+    branch = run_git("rev-parse", "--abbrev-ref", "HEAD")
+    describe = run_git("describe", "--tags", "--always", "--dirty")
+    status = run_git("status", "--porcelain", "--untracked-files=no")
+    tracked_changes = None if status is None else ([line for line in status.splitlines() if line] if status else [])
+    return {
+        "repo_root": str(root),
+        "available": commit is not None,
+        "commit": commit,
+        "branch": branch,
+        "describe": describe,
+        "tracked_worktree_clean": None if tracked_changes is None else not bool(tracked_changes),
+        "tracked_changes": tracked_changes,
+    }
+
+
+def build_provenance(
+    *,
+    repo_root: str | Path,
+    input_paths: Mapping[str, str | Path | None],
+    hash_inputs: bool,
+) -> dict:
+    """Build the release provenance payload embedded in JSON outputs."""
+    inputs = {
+        str(label): file_provenance(path, hash_content=bool(hash_inputs))
+        for label, path in sorted(input_paths.items())
+        if path not in (None, "")
+    }
+    return {
+        "schema": "chl-release-provenance@1",
+        "script": file_provenance(Path(__file__).resolve(), hash_content=True),
+        "git": git_provenance(repo_root),
+        "input_hashes_enabled": bool(hash_inputs),
+        "inputs": inputs,
+    }
 
 
 def read_json(path: str | Path | None) -> dict:
@@ -452,6 +536,13 @@ def empirical_counts_from_prime_csv(
 ) -> tuple[dict[tuple[str, int], np.ndarray], dict]:
     """Stream a prime CSV and return empirical residue-transition counts.
 
+    Parent-wide boundaries are expressed in the coordinates of the original
+    event stream.  When the first adjacent transition is skipped to move from
+    prime pairs to consecutive-gap triples, its event index is *not* compacted
+    away.  This preserves the real block boundaries and leaves the expected
+    one-event endpoint deficit in B01 and B_last, rather than shifting every
+    internal boundary and placing both missing endpoints in the last block.
+
     Parallel processing is applied to vectorized transition-count tasks. Reading
     gzip CSV remains serial, but the grouping by ``(block, from, to)`` can use
     multiple worker processes.
@@ -459,17 +550,20 @@ def empirical_counts_from_prime_csv(
     mods = [int(q) for q in mods]
     counts_by_id: dict[tuple[int, int], np.ndarray] = {}
     prev: int | None = None
-    transition_index = 0
+    raw_transition_index = 0
+    counted_transition_index = 0
     skipped_initial = 0
     tail_events_seen = 0
     total_events_counted = 0
     chunks_submitted = 0
     chunks_completed = 0
-    workers_eff = os.cpu_count() or 1 if int(workers) == 0 else max(1, int(workers))
+    workers_eff = (os.cpu_count() or 1) if int(workers) == 0 else max(1, int(workers))
 
     cumulative: np.ndarray | None = None
+    block_event_counts: np.ndarray | None = None
     if block_plan and block_plan.mode == "parent-wide":
         cumulative = np.cumsum(np.asarray(block_plan.counts, dtype=np.int64))
+        block_event_counts = np.zeros(len(block_plan.counts), dtype=np.int64)
 
     def submit_or_run(task, pool=None):
         nonlocal chunks_submitted, chunks_completed
@@ -494,25 +588,53 @@ def empirical_counts_from_prime_csv(
                 if len(arr):
                     prev = int(arr[-1])
                 continue
-            from_p = arr2[:-1]
-            to_p = arr2[1:]
-            if skip_first_transition and transition_index == 0 and len(from_p):
-                from_p = from_p[1:]
-                to_p = to_p[1:]
+
+            from_p_raw = arr2[:-1]
+            to_p_raw = arr2[1:]
+            raw_n = len(from_p_raw)
+            raw_idx = np.arange(raw_transition_index, raw_transition_index + raw_n, dtype=np.int64)
+
+            from_p = from_p_raw
+            to_p = to_p_raw
+            event_idx = raw_idx
+            if skip_first_transition and raw_transition_index == 0 and raw_n:
+                from_p = from_p_raw[1:]
+                to_p = to_p_raw[1:]
+                event_idx = raw_idx[1:]
                 skipped_initial += 1
+
+            # Advance the original-stream coordinate even when all transitions
+            # in a tiny first chunk were skipped.
+            raw_transition_index += raw_n
             n = len(from_p)
             if n <= 0:
                 prev = int(arr[-1]) if len(arr) else prev
                 continue
-            idx = np.arange(transition_index, transition_index + n, dtype=np.int64)
+
             if cumulative is not None:
+                # Preserve original event coordinates for parent-wide alignment.
+                idx = event_idx
                 block_ids, tail = assign_parentwide_block_ids(idx, cumulative, drop_tail=drop_partial_blocks)
                 tail_events_seen += int(tail)
+                if block_event_counts is not None:
+                    valid = (block_ids >= 0) & (block_ids < len(block_event_counts))
+                    if np.any(valid):
+                        block_event_counts += np.bincount(
+                            block_ids[valid], minlength=len(block_event_counts)
+                        ).astype(np.int64)
             elif fixed_block_size and fixed_block_size > 0:
+                # Fixed blocks are defined over the compacted counted stream.
+                idx = np.arange(
+                    counted_transition_index,
+                    counted_transition_index + n,
+                    dtype=np.int64,
+                )
                 block_ids = (idx // int(fixed_block_size)).astype(np.int64)
             else:
                 block_ids = np.zeros(n, dtype=np.int64)
+
             total_events_counted += int((block_ids >= 0).sum())
+            counted_transition_index += n
             task = (from_p, to_p, block_ids, mods)
             fut = submit_or_run(task, pool=pool)
             if fut is not None:
@@ -525,7 +647,6 @@ def empirical_counts_from_prime_csv(
                         done.append(f)
                         break
                     futures = [f for f in futures if f not in done]
-            transition_index += n
             prev = int(arr[-1]) if len(arr) else prev
         if pool is not None:
             for f in as_completed(futures):
@@ -537,16 +658,10 @@ def empirical_counts_from_prime_csv(
 
     # Convert numeric block IDs to labels.
     out: dict[tuple[str, int], np.ndarray] = {}
-    if block_plan and block_plan.mode == "parent-wide":
-        labels = list(block_plan.labels)
-    else:
-        labels = []
+    labels = list(block_plan.labels) if block_plan and block_plan.mode == "parent-wide" else []
     for (bid, q), mat in counts_by_id.items():
         if block_plan and block_plan.mode == "parent-wide":
-            if 0 <= bid < len(labels):
-                label = labels[bid]
-            else:
-                label = "TAIL_PARTIAL"
+            label = labels[bid] if 0 <= bid < len(labels) else "TAIL_PARTIAL"
         elif fixed_block_size and fixed_block_size > 0:
             label = f"B{bid + 1:02d}"
         else:
@@ -557,15 +672,47 @@ def empirical_counts_from_prime_csv(
         "workers_effective": workers_eff,
         "chunks_submitted": chunks_submitted,
         "chunks_completed": chunks_completed,
-        "raw_adjacent_transitions_seen": int(transition_index + skipped_initial),
+        "raw_adjacent_transitions_seen": int(raw_transition_index),
+        "candidate_transitions_after_skip": int(counted_transition_index),
         "skipped_initial_transition": int(skipped_initial),
         "counted_transitions": int(total_events_counted),
         "tail_events_seen": int(tail_events_seen),
         "tail_events_dropped": int(tail_events_seen if drop_partial_blocks else 0),
         "block_mode": block_plan.mode if block_plan else ("fixed" if fixed_block_size else "all"),
     }
-    return out, meta
 
+    if block_plan and block_plan.mode == "parent-wide" and block_event_counts is not None:
+        plan_counts = np.asarray(block_plan.counts, dtype=np.int64)
+        observed_counts = block_event_counts.astype(np.int64)
+        deltas = observed_counts - plan_counts
+
+        # Endpoint-adjusted expectation: one left endpoint is omitted by the
+        # explicit skip; any shortage between the parent-wide event plan and the
+        # raw adjacent-prime stream belongs to the right endpoint.
+        endpoint_adjusted = plan_counts.copy()
+        left_omitted = min(int(skipped_initial), int(endpoint_adjusted[0])) if len(endpoint_adjusted) else 0
+        if len(endpoint_adjusted):
+            endpoint_adjusted[0] -= left_omitted
+        right_omitted = max(0, int(block_plan.total_expected_transitions) - int(raw_transition_index))
+        remaining = right_omitted
+        for i in range(len(endpoint_adjusted) - 1, -1, -1):
+            take = min(remaining, int(endpoint_adjusted[i]))
+            endpoint_adjusted[i] -= take
+            remaining -= take
+            if remaining == 0:
+                break
+
+        meta.update({
+            "block_plan_observed_counts": observed_counts.tolist(),
+            "block_plan_count_deltas": deltas.tolist(),
+            "block_plan_unfilled_transitions": int(np.maximum(-deltas, 0).sum()),
+            "block_plan_overfilled_transitions": int(np.maximum(deltas, 0).sum()),
+            "endpoint_left_omitted": int(left_omitted),
+            "endpoint_right_omitted": int(right_omitted),
+            "block_plan_endpoint_adjusted_expected_counts": endpoint_adjusted.tolist(),
+            "block_alignment_matches_endpoint_adjusted_plan": bool(np.array_equal(observed_counts, endpoint_adjusted)),
+        })
+    return out, meta
 
 def matrix_sets_from_prime_csv(
     prime_csv: str | Path,
@@ -579,6 +726,7 @@ def matrix_sets_from_prime_csv(
     fixed_block_size: int,
     drop_partial_blocks: bool,
     skip_first_transition: bool,
+    max_pending_factor: int,
 ) -> tuple[list[LoadedMatrixSet], dict]:
     """Build empirical block matrices from prime CSV and use OS CSV model matrices."""
     model_mats = build_model_matrices_from_os_csv(os_csv, mods=mods, model=model)
@@ -591,6 +739,7 @@ def matrix_sets_from_prime_csv(
         fixed_block_size=fixed_block_size,
         drop_partial_blocks=drop_partial_blocks,
         skip_first_transition=skip_first_transition,
+        max_pending_factor=max_pending_factor,
     )
     out: list[LoadedMatrixSet] = []
     for (block, q), counts in sorted(emp_counts.items(), key=lambda kv: (kv[0][0], kv[0][1])):
@@ -695,15 +844,44 @@ def write_outputs(matrix_sets: list[LoadedMatrixSet], output_dir: Path, eps: flo
         for q, sub in spec_df_tmp.groupby("q"):
             if "error" in sub.columns and sub["error"].notna().all():
                 continue
-            sub2 = sub[(sub.get("chi_index", -1) != 0) | (sub.get("psi_index", -1) != 0)]
+            sub2 = sub[(sub.get("chi_index", -1) != 0) | (sub.get("psi_index", -1) != 0)].copy()
+            sub2["energy_fraction"] = pd.to_numeric(sub2["energy_fraction"], errors="coerce")
+            sub2 = sub2.dropna(subset=["energy_fraction"])
             if len(sub2):
+                idxmax = sub2.groupby("block")["energy_fraction"].idxmax()
+                dominant = sub2.loc[idxmax, ["block", "chi_index", "psi_index", "energy_fraction"]].copy()
+                vals = dominant["energy_fraction"].astype(float)
+                mode_counts = (
+                    dominant.groupby(["chi_index", "psi_index"]).size().sort_values(ascending=False)
+                )
+                top_mode = mode_counts.index[0]
                 stability_rows.append({
                     "diagnostic": "nonprincipal_energy_fraction_max_by_block",
                     "q": int(q),
+                    "n_blocks": int(len(vals)),
                     "n_rows": int(len(sub2)),
-                    "mean": float(pd.to_numeric(sub2["energy_fraction"], errors="coerce").mean()),
-                    "max": float(pd.to_numeric(sub2["energy_fraction"], errors="coerce").max()),
+                    "mean": float(vals.mean()),
+                    "std": float(vals.std(ddof=1)) if len(vals) > 1 else 0.0,
+                    "min": float(vals.min()),
+                    "max": float(vals.max()),
+                    "dominant_chi_index": int(top_mode[0]),
+                    "dominant_psi_index": int(top_mode[1]),
+                    "dominant_mode_count": int(mode_counts.iloc[0]),
+                    "dominant_mode_fraction_of_blocks": float(mode_counts.iloc[0] / len(vals)),
                 })
+                erank_vals = pd.to_numeric(
+                    sub.groupby("block")["effective_rank"].first(), errors="coerce"
+                ).dropna()
+                if len(erank_vals):
+                    stability_rows.append({
+                        "diagnostic": "effective_rank_by_block",
+                        "q": int(q),
+                        "n_blocks": int(len(erank_vals)),
+                        "mean": float(erank_vals.mean()),
+                        "std": float(erank_vals.std(ddof=1)) if len(erank_vals) > 1 else 0.0,
+                        "min": float(erank_vals.min()),
+                        "max": float(erank_vals.max()),
+                    })
 
     pd.DataFrame(empirical_rows).to_csv(output_dir / "chl4_transfer_empirical_matrices.csv", index=False)
     pd.DataFrame(model_rows).to_csv(output_dir / "chl4_transfer_chl2_matrices.csv", index=False)
@@ -711,37 +889,121 @@ def write_outputs(matrix_sets: list[LoadedMatrixSet], output_dir: Path, eps: flo
     pd.DataFrame(q3_rows).to_csv(output_dir / "chl4_q3_diagonal_scalar.csv", index=False)
     pd.DataFrame(spectrum_rows).to_csv(output_dir / "chl4_character_spectrum.csv", index=False)
     pd.DataFrame(stability_rows).to_csv(output_dir / "chl4_block_stability.csv", index=False)
-    write_interpretation(output_dir, q3_df, pd.DataFrame(spectrum_rows))
+    interpretation_summary = write_interpretation(output_dir, q3_df, pd.DataFrame(spectrum_rows))
     return {
         "matrix_sets": len(matrix_sets),
         "empirical_rows": len(empirical_rows),
         "residual_rows": len(residual_rows),
         "q3_rows": len(q3_rows),
         "spectrum_rows": len(spectrum_rows),
+        "interpretation_summary": interpretation_summary,
     }
 
 
-def write_interpretation(output_dir: Path, q3_df: pd.DataFrame, spectrum_df: pd.DataFrame) -> None:
-    """Write a human-readable interpretation markdown."""
+def write_interpretation(output_dir: Path, q3_df: pd.DataFrame, spectrum_df: pd.DataFrame) -> dict:
+    """Write the A07 report and return its machine-readable summary."""
     lines: list[str] = []
+    report: dict = {
+        "q3_full_blocks": 0,
+        "q3_wrong_sign_count": 0,
+        "q3_residual_positive_count": 0,
+        "q3_residual_negative_count": 0,
+        "q3_dominant_mode": None,
+    }
     lines.append("# CHL4 modular-transfer residual audit\n")
     lines.append("This audit measures the direct prime-residue transfer residual left by CHL2. It is diagnostic only; it does not fit a new model.\n")
+
+    stable = pd.DataFrame()
+    vals = pd.Series(dtype=float)
     if not q3_df.empty and "D_empirical" in q3_df.columns:
         cols = ["block", "D_empirical", "D_chl2", "D_residual_emp_minus_chl2", "diagonal_probability_empirical", "diagonal_probability_chl2", "wrong_sign_chl2"]
         show = q3_df[[c for c in cols if c in q3_df.columns]].copy()
         lines.append("## q=3 diagonal/off-diagonal scalar\n")
         lines.append(safe_to_markdown(show, index=False))
         lines.append("\n")
-        stable = q3_df[~q3_df["block"].astype(str).str.contains("TAIL_PARTIAL", na=False)].copy() if "block" in q3_df.columns else q3_df
+        stable = q3_df[~q3_df["block"].astype(str).str.contains("TAIL_PARTIAL", na=False)].copy() if "block" in q3_df.columns else q3_df.copy()
         vals = pd.to_numeric(stable.get("D_residual_emp_minus_chl2"), errors="coerce").dropna()
+        report["q3_full_blocks"] = int(len(vals))
         if len(vals):
-            lines.append(f"Mean residual scalar D_emp - D_CHL2 over full blocks: `{vals.mean():.6g}`. Negative empirical D with positive CHL2 D indicates the known binary-residue anomaly.\n")
+            report.update({
+                "q3_residual_mean": float(vals.mean()),
+                "q3_residual_std": float(vals.std(ddof=1)) if len(vals) > 1 else 0.0,
+                "q3_residual_min": float(vals.min()),
+                "q3_residual_max": float(vals.max()),
+                "q3_residual_positive_count": int((vals > 0).sum()),
+                "q3_residual_negative_count": int((vals < 0).sum()),
+            })
+            if "wrong_sign_chl2" in stable.columns:
+                report["q3_wrong_sign_count"] = int(stable["wrong_sign_chl2"].fillna(False).astype(bool).sum())
+            lines.append(
+                "Across the full blocks, `D_empirical - D_CHL2` has "
+                f"mean `{vals.mean():.6g}`, standard deviation `{(vals.std(ddof=1) if len(vals) > 1 else 0.0):.6g}`, "
+                f"and range `[{vals.min():.6g}, {vals.max():.6g}]`. "
+                f"Its sign is negative in `{int((vals < 0).sum())}/{len(vals)}` blocks; "
+                f"the direct-control wrong-sign flag is present in `{report['q3_wrong_sign_count']}/{len(vals)}` blocks.\n"
+            )
+
     if not spectrum_df.empty and "energy_fraction" in spectrum_df.columns:
-        lines.append("## Character-spectrum note\n")
-        lines.append("The file `chl4_character_spectrum.csv` contains the Dirichlet-character Fourier decomposition of the row-centered residual. For prime q, character index 0 is principal. The first CHL4 milestone is to test whether q=3 residual energy concentrates in the single non-principal mode.\n")
-    lines.append("## Next step\n")
-    lines.append("If the q=3 residual is stable by block and concentrated in a low-dimensional character mode, the next CHL4 phase is a local Oliver--Soundararajan projection.\n")
+        lines.append("## Character-spectrum result\n")
+        spec = spectrum_df.copy()
+        if "block" in spec.columns:
+            spec = spec[~spec["block"].astype(str).str.contains("TAIL_PARTIAL", na=False)]
+        if "q" in spec.columns:
+            spec = spec[pd.to_numeric(spec["q"], errors="coerce") == 3]
+        required = {"block", "chi_index", "psi_index", "energy_fraction"}
+        if required.issubset(spec.columns):
+            spec["chi_index"] = pd.to_numeric(spec["chi_index"], errors="coerce")
+            spec["psi_index"] = pd.to_numeric(spec["psi_index"], errors="coerce")
+            spec["energy_fraction"] = pd.to_numeric(spec["energy_fraction"], errors="coerce")
+            nonprincipal = spec[
+                ((spec["chi_index"] != 0) | (spec["psi_index"] != 0))
+                & spec["energy_fraction"].notna()
+            ].copy()
+            if not nonprincipal.empty:
+                idxmax = nonprincipal.groupby("block")["energy_fraction"].idxmax()
+                dominant = nonprincipal.loc[idxmax, ["block", "chi_index", "psi_index", "energy_fraction"]].copy()
+                energies = dominant["energy_fraction"].astype(float)
+                mode_counts = dominant.groupby(["chi_index", "psi_index"]).size().sort_values(ascending=False)
+                top_mode = mode_counts.index[0]
+                top_count = int(mode_counts.iloc[0])
+                report.update({
+                    "q3_nonprincipal_energy_fraction_max_mean": float(energies.mean()),
+                    "q3_nonprincipal_energy_fraction_max_min": float(energies.min()),
+                    "q3_nonprincipal_energy_fraction_max_max": float(energies.max()),
+                    "q3_dominant_mode": {"chi_index": int(top_mode[0]), "psi_index": int(top_mode[1])},
+                    "q3_dominant_mode_count": top_count,
+                    "q3_dominant_mode_fraction_of_blocks": float(top_count / len(dominant)),
+                })
+                lines.append(
+                    "For q=3, the maximum non-principal energy fraction per block has "
+                    f"mean `{energies.mean():.6g}` and range `[{energies.min():.6g}, {energies.max():.6g}]`. "
+                    f"Mode `(chi_index, psi_index)=({int(top_mode[0])}, {int(top_mode[1])})` is dominant in "
+                    f"`{top_count}/{len(dominant)}` blocks.\n"
+                )
+                if "effective_rank" in spec.columns:
+                    eranks = pd.to_numeric(spec.groupby("block")["effective_rank"].first(), errors="coerce").dropna()
+                    if len(eranks):
+                        report.update({
+                            "q3_effective_rank_mean": float(eranks.mean()),
+                            "q3_effective_rank_min": float(eranks.min()),
+                            "q3_effective_rank_max": float(eranks.max()),
+                        })
+                        lines.append(
+                            f"The effective rank has mean `{eranks.mean():.6g}` and range "
+                            f"`[{eranks.min():.6g}, {eranks.max():.6g}]`.\n"
+                        )
+            else:
+                lines.append("No finite q=3 non-principal spectrum rows were available for this run.\n")
+        else:
+            lines.append("The spectrum output does not contain the columns required for the q=3 concentration summary.\n")
+
+    lines.append("## Result and downstream use\n")
+    lines.append(
+        "These A07 outputs define the block-aligned residual object consumed by the separately generated CHL4-D5 orientation-lift comparison. "
+        "The replacement result and every old-versus-oriented claim belong to that downstream audit, rather than being inferred conditionally here.\n"
+    )
     (output_dir / "chl4_interpretacion.md").write_text("\n".join(lines), encoding="utf-8")
+    return report
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -763,6 +1025,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--workers", type=int, default=1, help="Workers for vectorized prime-stream grouping; 0 means all CPUs.")
     parser.add_argument("--max-pending-factor", type=int, default=2, help="Max pending chunk tasks per worker.")
     parser.add_argument("--eps", type=float, default=1e-12)
+    parser.add_argument("--hash-inputs", action=argparse.BooleanOptionalAction, default=False, help="Compute SHA-256 for every declared input and embed it in config/telemetry.")
     parser.add_argument("--output-dir", required=True)
     args = parser.parse_args(argv)
 
@@ -825,25 +1088,44 @@ def main(argv: Sequence[str] | None = None) -> int:
             fixed_block_size=args.block_size_transitions if (block_plan and block_plan.mode == "fixed") else 0,
             drop_partial_blocks=args.drop_partial_blocks,
             skip_first_transition=skip_first,
+            max_pending_factor=args.max_pending_factor,
         )
     counts = write_outputs(matrix_sets, outdir, eps=args.eps)
+    input_paths: dict[str, str | Path | None] = {
+        "os_csv": args.os_csv,
+        "prime_csv": args.prime_csv,
+        "config": args.config,
+    }
+    if block_plan and block_plan.mode == "parent-wide":
+        for label, source_path in zip(block_plan.labels, block_plan.source_files):
+            input_paths[f"parent_wide_{label}"] = source_path
+    provenance = build_provenance(
+        repo_root=args.root,
+        input_paths=input_paths,
+        hash_inputs=args.hash_inputs,
+    )
     cfg = {
         "mode": args.mode,
         "os_csv": str(args.os_csv),
         "model": args.model,
+        "model_reference_scope": ("global_os_csv_replicated_by_block" if args.mode == "from-prime-csv" else "as_stored_in_os_csv"),
         "mods": mods,
         "prime_csv": args.prime_csv,
         "config": args.config,
         "root": str(args.root),
         "blocks": args.blocks,
         "block_boundary_mode": args.block_boundary_mode,
+        "block_count_col": args.block_count_col,
         "block_size_transitions": args.block_size_transitions,
         "chunksize": args.chunksize,
         "workers": args.workers,
+        "max_pending_factor": args.max_pending_factor,
         "drop_partial_blocks": args.drop_partial_blocks,
         "skip_first_transition_effective": (bool(args.skip_first_transition) if args.skip_first_transition is not None else bool(block_plan and block_plan.mode == "parent-wide")),
         "eps": args.eps,
+        "hash_inputs": args.hash_inputs,
         "output_dir": str(outdir),
+        "provenance": provenance,
         **boundary_meta,
         **stream_meta,
         **counts,
