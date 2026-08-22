@@ -819,7 +819,7 @@ def evaluate_block(
                 "common_support_gate_pass": bool(
                     len(model_rows) == 8 and len(support_hashes) == 1 and len(target_values) == 1
                 ),
-                "anchor_gate_pass": bool(anchor_max <= float(anchor_tolerance) * 10.0),
+                "anchor_gate_pass": bool(anchor_max <= float(anchor_tolerance)),
             }
         )
     return metrics, support_rows, block_meta
@@ -1160,7 +1160,7 @@ def build_gate_summary(
         and support_audit["common_support_gate_pass"].astype(bool).all()
     )
     anchor_max = float(metrics["anchor_abs_error"].max()) if not metrics.empty else math.inf
-    anchor_pass = bool(anchor_max <= float(anchor_tolerance) * 10.0)
+    anchor_pass = bool(anchor_max <= float(anchor_tolerance))
     effects_complete = bool(len(effects_by_block) == expected_effect_rows)
     contexts_complete = bool(len(context_by_block) == expected_context_rows)
     finite_metrics = bool(
@@ -1317,7 +1317,7 @@ def write_interpretation(
     )
     lines.append("")
     lines.append(
-        "The production CHL2 kernel remains the $R\times P$ vertex. The marginal pair factor $H$ is evaluated here as an ablation coordinate and should not be multiplied into a production candidate solely because its isolated main effect is positive."
+        "The production CHL2 kernel remains the $R\\times P$ vertex. The marginal pair factor $H$ is evaluated here only as an ablation coordinate; a context-dependent addition or factorial contrast is not, by itself, a basis for multiplying $H$ into the production kernel."
     )
     lines.append("")
 

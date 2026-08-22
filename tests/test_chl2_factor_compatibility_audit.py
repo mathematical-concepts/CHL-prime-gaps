@@ -158,7 +158,7 @@ def test_end_to_end_uses_one_support_and_one_terminal_target(tmp_path: Path) -> 
     assert set(metrics["model"]) == set(mod.MODEL_BY_NAME)
     assert metrics["support_sha256"].nunique() == 1
     assert metrics["target_mean_g2"].max() - metrics["target_mean_g2"].min() < 1e-12
-    assert metrics["anchor_abs_error"].max() <= 1e-9
+    assert metrics["anchor_abs_error"].max() <= 1e-10
     assert len(support) == 1
     assert bool(support.iloc[0]["common_support_gate_pass"])
     assert bool(support.iloc[0]["anchor_gate_pass"])
@@ -171,6 +171,13 @@ def test_end_to_end_uses_one_support_and_one_terminal_target(tmp_path: Path) -> 
     assert cfg["provenance"]["input_hashes_enabled"] is True
     assert cfg["provenance"]["script"]["sha256"]
     assert cfg["provenance"]["inputs"]["path_cache"]["sha256"]
+
+    report = (output_dir / "chl2_factor_compatibility_interpretation.md").read_text(
+        encoding="utf-8"
+    )
+    assert "$R\\times P$" in report
+    assert "\t" not in report
+    assert "isolated main effect is positive" not in report
 
 
 def test_observed_triple_inadmissible_row_is_rejected() -> None:
@@ -237,3 +244,39 @@ def test_release_gate_rejects_missing_requested_block_filter_cell(tmp_path: Path
     assert cfg["gates"]["expected_block_filter_cells"] == 2
     assert cfg["gates"]["actual_block_filter_cells"] == 1
     assert cfg["gates"]["a10_release_gate_pass"] is False
+
+
+def test_release_gate_uses_declared_anchor_tolerance() -> None:
+    mod = load_script()
+    tolerance = 1e-10
+    metrics = pd.DataFrame(
+        {
+            "anchor_abs_error": [1.01 * tolerance] * 8,
+            "loglik_sum": [-1.0] * 8,
+            "loglik_per_event": [-1.0] * 8,
+            "conditional_kl": [0.1] * 8,
+            "eta": [0.0] * 8,
+            "mean_g2_model": [2.0] * 8,
+        }
+    )
+    support = pd.DataFrame(
+        {
+            "common_support_gate_pass": [True],
+        }
+    )
+    missing = pd.DataFrame(columns=["block", "filter", "stratum", "model", "reason"])
+    effects = pd.DataFrame(index=range(7))
+    contexts = pd.DataFrame(index=range(12))
+
+    gates = mod.build_gate_summary(
+        metrics=metrics,
+        support_audit=support,
+        missing_cells=missing,
+        effects_by_block=effects,
+        context_by_block=contexts,
+        anchor_tolerance=tolerance,
+        expected_cells=1,
+    )
+
+    assert gates["terminal_anchor_gate_pass"] is False
+    assert gates["a10_release_gate_pass"] is False
