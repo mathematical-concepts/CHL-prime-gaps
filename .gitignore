@@ -4,12 +4,27 @@ __pycache__/
 venv/
 .env
 *.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 .ipynb_checkpoints/
+.coverage
+htmlcov/
+
+# Generated scientific data and run products.
 .prime_cache/
 data/
 outputs/
+reference_outputs/
+work/
+tmp/
+.local_artifacts/
+
+# Generated numeric/log artifacts outside the standard run directories.
 *.npy
 *.csv.gz
 *.log
+
+# Local tooling and IDE metadata.
 .claude/
 .idea/
