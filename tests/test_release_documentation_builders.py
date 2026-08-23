@@ -352,15 +352,26 @@ def test_vector_figures_are_deterministic_and_avoid_type3_fonts(tmp_path: Path) 
             assert b"/Subtype /Type3" not in left.read_bytes()
 
 
-def test_readme_uses_canonical_v2_paths_and_safe_table4_language() -> None:
+def test_readme_uses_canonical_v2_paths_and_reconstructed_table4_language() -> None:
     text = (REPO / "README.md").read_text(encoding="utf-8")
     assert "outputs/v2_release_chl2_main" in text
     assert "outputs/v2_release_chl4_residual_blocks_aligned" in text
     assert "outputs/v2_release_chl2_factor_compatibility" in text
     assert "absolute_prime_os_previous_gap_conditioned" in text
     assert "naive_table4_legacy" in text
-    assert "does not claim to reproduce the old `0.100000` and `0.083333`" in text
+    assert "missing-modulus/zero-row fallback" in text
+    assert "1/(q-1)" in text
+    assert "withdrawn as a scientific baseline" in text
+    assert "historical provenance remains unresolved" not in text
     assert "reference_outputs/v2.0" not in text
+
+    provenance = REPO / "docs" / "NAIVE_TABLE4_LEGACY_PROVENANCE.md"
+    assert provenance.is_file()
+    provenance_text = provenance.read_text(encoding="utf-8")
+    assert "A06: CLOSED" in provenance_text
+    assert "--os-prime-mods" in provenance_text
+    assert "zero model rows" in provenance_text
+    assert "uniform reduced-residue rows" in provenance_text
 
 
 def test_non_strict_table_build_skips_missing_audits(tmp_path: Path) -> None:

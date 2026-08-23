@@ -243,7 +243,20 @@ def transition_from_gap_residue_population(
     return pd.DataFrame(rows)
 
 
-def matrix_from_rows(df: pd.DataFrame, q: int, prob_col: str) -> Tuple[List[int], np.ndarray]:
+def matrix_from_rows(
+    df: pd.DataFrame,
+    q: int,
+    prob_col: str,
+    *,
+    zero_row_policy: str = "error",
+) -> Tuple[List[int], np.ndarray]:
+    """Build a reduced-residue matrix without silently repairing zero rows.
+
+    ``zero_row_policy='uniform'`` is retained only for explicitly named
+    synthetic controls. Scientific matrices use the default ``'error'``.
+    """
+    if zero_row_policy not in {"error", "uniform"}:
+        raise ValueError(f"unknown zero_row_policy={zero_row_policy!r}")
     rr = reduced_residues(q)
     idx = {r: i for i, r in enumerate(rr)}
     M = np.zeros((len(rr), len(rr)), dtype=float)
@@ -251,13 +264,21 @@ def matrix_from_rows(df: pd.DataFrame, q: int, prob_col: str) -> Tuple[List[int]
         b = int(getattr(row, "from_residue"))
         a = int(getattr(row, "to_residue"))
         if b in idx and a in idx:
-            M[idx[b], idx[a]] += float(getattr(row, prob_col))
-    for i in range(M.shape[0]):
+            value = float(getattr(row, prob_col))
+            if not math.isfinite(value) or value < 0.0:
+                raise ValueError(
+                    f"invalid matrix probability for q={q}, from_residue={b}, "
+                    f"to_residue={a}: {value!r}"
+                )
+            M[idx[b], idx[a]] += value
+    for i, b in enumerate(rr):
         s = float(M[i].sum())
         if s > 0:
             M[i] /= s
-        else:
+        elif zero_row_policy == "uniform":
             M[i] = 1.0 / len(rr)
+        else:
+            raise ValueError(f"zero-sum model row for q={q}, from_residue={b}")
     return rr, M
 
 
@@ -365,7 +386,14 @@ def normalize_old_model_direct(path: str | Path) -> pd.DataFrame:
     missing = req - set(out.columns)
     if missing:
         raise ValueError(f"{path} missing required old model matrix columns: {sorted(missing)}")
-    return out[["block", "q", "from_residue", "to_residue", "model_probability"]].copy()
+    result = out[["block", "q", "from_residue", "to_residue", "model_probability"]].copy()
+    result.attrs["matrix_support_audit"] = validate_probability_matrix_groups(
+        result,
+        prob_col="model_probability",
+        label=f"old model input {path}",
+        require_normalized=True,
+    )
+    return result
 
 
 def read_d4_lift_matrix(path: str | Path, *, source: str = "chl2_gap_population", lift_kind: str = "orientation") -> pd.DataFrame:
@@ -677,6 +705,94 @@ def _validate_complete_matrix_cells(df: pd.DataFrame, q: int, *, label: str) -> 
         raise ValueError(f"incomplete matrix for {label}, q={q}; missing={missing[:8]}, extra={extra[:8]}")
 
 
+def validate_probability_matrix_groups(
+    df: pd.DataFrame,
+    *,
+    prob_col: str,
+    label: str,
+    require_normalized: bool = True,
+    tolerance: float = 1e-10,
+) -> dict:
+    """Validate complete, finite, positive-row transition matrices by group."""
+    required = {"block", "q", "from_residue", "to_residue", prob_col}
+    missing_columns = sorted(required - set(df.columns))
+    if missing_columns:
+        raise ValueError(f"{label} missing matrix columns: {missing_columns}")
+
+    rows_checked = 0
+    groups_checked = 0
+    row_sums_seen: List[float] = []
+    zero_sum_rows: List[dict] = []
+    for (block, q0), sub in df.groupby(["block", "q"], dropna=False):
+        q = int(q0)
+        group_label = f"{label}, block={block}"
+        _validate_complete_matrix_cells(sub, q, label=group_label)
+        work = sub.copy()
+        probs = pd.to_numeric(work[prob_col], errors="coerce").to_numpy(dtype=float)
+        if not np.isfinite(probs).all():
+            raise ValueError(f"non-finite model probabilities for {group_label}, q={q}")
+        if (probs < 0).any():
+            raise ValueError(f"negative model probabilities for {group_label}, q={q}")
+        work["__prob"] = probs
+        row_sums = work.groupby("from_residue", sort=True)["__prob"].sum()
+        for residue, total in row_sums.items():
+            total_f = float(total)
+            row_sums_seen.append(total_f)
+            if total_f <= 0.0:
+                zero_sum_rows.append({
+                    "block": str(block),
+                    "q": q,
+                    "from_residue": int(residue),
+                })
+        if zero_sum_rows:
+            first = zero_sum_rows[0]
+            raise ValueError(
+                "zero-sum model row for "
+                f"block={first['block']}, q={first['q']}, "
+                f"from_residue={first['from_residue']}"
+            )
+        if require_normalized and not np.allclose(
+            row_sums.to_numpy(dtype=float),
+            1.0,
+            rtol=0.0,
+            atol=float(tolerance),
+        ):
+            bad = {
+                int(residue): float(total)
+                for residue, total in row_sums.items()
+                if not math.isclose(float(total), 1.0, rel_tol=0.0, abs_tol=float(tolerance))
+            }
+            raise ValueError(
+                f"model probability rows do not sum to one for {group_label}, q={q}: {bad}"
+            )
+        rows_checked += int(len(work))
+        groups_checked += 1
+
+    if groups_checked == 0:
+        raise ValueError(f"{label} contains no matrix groups")
+    return {
+        "matrix_support_gate_pass": True,
+        "matrix_groups_checked": int(groups_checked),
+        "matrix_cells_checked": int(rows_checked),
+        "zero_sum_model_rows": [],
+        "model_row_sum_min": float(min(row_sums_seen)),
+        "model_row_sum_max": float(max(row_sums_seen)),
+    }
+
+
+def legacy_table4_provenance_summary() -> dict:
+    """Return the release status of the reconstructed v1.8 Table 4 artifact."""
+    return {
+        "status": "closed_legacy_implementation_artifact",
+        "scientific_baseline": False,
+        "historical_label": "naive_table4_legacy",
+        "v2_control": "absolute_prime_os_previous_gap_conditioned",
+        "q_3_5_7_source": "previous_gap_conditioned_direct_matrix",
+        "q_11_13_source": "missing_modulus_zero_row_uniform_fallback",
+        "documentation": "docs/NAIVE_TABLE4_LEGACY_PROVENANCE.md",
+    }
+
+
 def ensure_all_empirical(emp: pd.DataFrame) -> pd.DataFrame:
     """Append a count-exact ALL empirical matrix when only blocks are present."""
     out = emp.copy()
@@ -701,6 +817,12 @@ def ensure_all_empirical(emp: pd.DataFrame) -> pd.DataFrame:
 def ensure_all_model(model: pd.DataFrame, empirical: pd.DataFrame) -> pd.DataFrame:
     """Append ALL model matrices using empirical row-mass weighting if absent."""
     out = model.copy()
+    validate_probability_matrix_groups(
+        out,
+        prob_col="model_probability",
+        label="model matrix",
+        require_normalized=True,
+    )
     if (out["block"].astype(str) == "ALL").any():
         return out
     emp_blocks = empirical[empirical["block"].astype(str) != "ALL"]
@@ -712,14 +834,21 @@ def ensure_all_model(model: pd.DataFrame, empirical: pd.DataFrame) -> pd.DataFra
     work["expected"] = work["model_probability"].astype(float) * work["row_count"].astype(float)
     agg = work.groupby(["q", "from_residue", "to_residue"], as_index=False).agg(expected=("expected", "sum"))
     z = agg.groupby(["q", "from_residue"])["expected"].transform("sum")
-    agg["model_probability"] = np.divide(
-        agg["expected"], z, out=np.zeros(len(agg), dtype=float), where=z.to_numpy() > 0
-    )
+    if (z.to_numpy(dtype=float) <= 0.0).any():
+        bad = agg.loc[z.to_numpy(dtype=float) <= 0.0, ["q", "from_residue"]].drop_duplicates()
+        raise ValueError(
+            f"cannot aggregate model ALL; zero-sum model rows: {bad.to_dict('records')}"
+        )
+    agg["model_probability"] = agg["expected"] / z
     agg["block"] = "ALL"
-    return pd.concat([
-        out,
-        agg[["block", "q", "from_residue", "to_residue", "model_probability"]],
-    ], ignore_index=True)
+    all_rows = agg[["block", "q", "from_residue", "to_residue", "model_probability"]]
+    validate_probability_matrix_groups(
+        all_rows,
+        prob_col="model_probability",
+        label="aggregated ALL model matrix",
+        require_normalized=True,
+    )
+    return pd.concat([out, all_rows], ignore_index=True)
 
 
 def combine_empirical_and_model(
@@ -743,7 +872,12 @@ def combine_empirical_and_model(
             missing_groups.append((str(block), q))
             continue
         _validate_complete_matrix_cells(esub, q, label=f"empirical block={block}")
-        _validate_complete_matrix_cells(msub, q, label=f"model block={block}")
+        validate_probability_matrix_groups(
+            msub,
+            prob_col="model_probability",
+            label=f"model block={block}",
+            require_normalized=True,
+        )
         merged = esub.merge(
             msub[["q", "from_residue", "to_residue", "model_probability"]],
             on=["q", "from_residue", "to_residue"],
@@ -934,7 +1068,7 @@ def write_interpretation(outdir: Path, summary: pd.DataFrame, old_vs_new: pd.Dat
     outcome = summarize_replacement_outcome(old_vs_new)
     lines.append("# CHL4-D5 Orientation-Lift OS Replacement")
     lines.append("")
-    lines.append("This audit compares the reproducible absolute-prime OS previous-gap-conditioned control with an orientation-lift construction from CHL2 gap-residue populations. It does not identify that control with `naive_table4_legacy`.")
+    lines.append("This audit compares the reproducible absolute-prime OS previous-gap-conditioned control with an orientation-lift construction from CHL2 gap-residue populations. It does not identify that control with the historical `naive_table4_legacy` implementation artifact.")
     lines.append("")
     all_rows = summary[summary["block"].astype(str) == "ALL"] if "block" in summary.columns else summary
     if not all_rows.empty:
@@ -991,7 +1125,13 @@ def write_interpretation(outdir: Path, summary: pd.DataFrame, old_vs_new: pd.Dat
             )
     else:
         lines.append("No previous-gap-conditioned model matrix was supplied, so this run does not support an old-versus-oriented replacement claim.")
-    lines.append("The historical provenance of `naive_table4_legacy` remains unresolved and is not inferred from this audit.")
+    lines.append(
+        "The v1.8 `naive_table4_legacy` provenance has been reconstructed as a mixed implementation artifact: "
+        "q=3,5,7 used the available previous-gap-conditioned direct matrices, while absent q=11,13 inputs "
+        "became zero rows and were silently normalized to uniform reduced-residue rows. The artifact is retained "
+        "for historical explanation only; it is not the reproducible control supplied to this run. See "
+        "`docs/NAIVE_TABLE4_LEGACY_PROVENANCE.md`."
+    )
     (outdir / "chl4d5_interpretacion.md").write_text("\n".join(lines), encoding="utf-8")
     return outcome
 
@@ -1046,6 +1186,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     combined = combine_empirical_and_model(empirical, model, mods)
     summary = summarize_transition(combined)
+    old_model_support_audit = None
+    if args.old_model_matrix_csv:
+        old_model_support_audit = normalize_old_model_direct(
+            args.old_model_matrix_csv
+        ).attrs.get("matrix_support_audit")
     old_vs_new = (
         compare_with_old(
             args.old_model_matrix_csv,
@@ -1112,12 +1257,26 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "contains_all_aggregate": bool((summary["block"].astype(str) == "ALL").any()),
         "old_model_label": args.old_model_label,
         "oriented_model_label": args.oriented_model_label,
+        "old_model_support_gate_pass": (
+            None
+            if old_model_support_audit is None
+            else bool(old_model_support_audit.get("matrix_support_gate_pass"))
+        ),
+        "old_model_support_audit": old_model_support_audit,
+        "legacy_table4_provenance": legacy_table4_provenance_summary(),
         "interpretation_summary": interpretation_summary,
         "provenance": provenance,
         "output_files": output_files,
     }
     (outdir / "chl4d5_runtime_telemetry.json").write_text(json.dumps(telemetry, indent=2), encoding="utf-8")
     config_payload = dict(vars(args))
+    config_payload["old_model_support_gate_pass"] = (
+        None
+        if old_model_support_audit is None
+        else bool(old_model_support_audit.get("matrix_support_gate_pass"))
+    )
+    config_payload["old_model_support_audit"] = old_model_support_audit
+    config_payload["legacy_table4_provenance"] = legacy_table4_provenance_summary()
     config_payload["provenance"] = provenance
     (outdir / "chl4d5_config.json").write_text(json.dumps(config_payload, indent=2), encoding="utf-8")
     return 0

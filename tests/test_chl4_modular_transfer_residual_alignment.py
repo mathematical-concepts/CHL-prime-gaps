@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -55,3 +56,65 @@ def test_parentwide_skip_preserves_original_event_coordinates(tmp_path: Path) ->
         assert meta["block_alignment_matches_endpoint_adjusted_plan"] is True
 
     assert outputs[0] == outputs[1] == {("B01", 3): 2, ("B02", 3): 2}
+
+
+def _q3_os_rows(*, row2_zero: bool = False) -> list[dict]:
+    rows: list[dict] = []
+    for b in [1, 2]:
+        for a in [1, 2]:
+            probability = 0.0 if row2_zero and b == 2 else 0.5
+            rows.append({
+                "q": 3,
+                "model": "CHL2_path_excl_cond_eta",
+                "from_residue": b,
+                "to_residue": a,
+                "model_probability": probability,
+                "row_count": 100,
+            })
+    return rows
+
+
+def test_os_model_support_rejects_missing_requested_modulus(tmp_path: Path) -> None:
+    mod = load_script()
+    os_csv = tmp_path / "os_missing_q5.csv"
+    pd.DataFrame(_q3_os_rows()).to_csv(os_csv, index=False)
+
+    with pytest.raises(ValueError, match=r"missing requested moduli \[5\]"):
+        mod.build_model_matrices_from_os_csv(
+            os_csv,
+            [3, 5],
+            model="CHL2_path_excl_cond_eta",
+        )
+
+
+def test_os_model_support_rejects_zero_sum_rows(tmp_path: Path) -> None:
+    mod = load_script()
+    os_csv = tmp_path / "os_zero_row.csv"
+    pd.DataFrame(_q3_os_rows(row2_zero=True)).to_csv(os_csv, index=False)
+
+    with pytest.raises(ValueError, match=r"zero-sum model rows.*q=3"):
+        mod.validate_os_model_support(
+            os_csv,
+            [3],
+            model="CHL2_path_excl_cond_eta",
+        )
+
+
+def test_os_model_support_audit_records_complete_requested_moduli(tmp_path: Path) -> None:
+    mod = load_script()
+    os_csv = tmp_path / "os_complete.csv"
+    pd.DataFrame(_q3_os_rows()).to_csv(os_csv, index=False)
+
+    audit = mod.validate_os_model_support(
+        os_csv,
+        [3],
+        model="CHL2_path_excl_cond_eta",
+    )
+
+    assert audit["requested_mods"] == [3]
+    assert audit["available_mods"] == [3]
+    assert audit["missing_requested_mods"] == []
+    assert audit["zero_sum_model_rows"] == []
+    assert audit["model_support_gate_pass"] is True
+    assert audit["model_support_expected_cells"] == 4
+    assert audit["model_support_observed_cells"] == 4

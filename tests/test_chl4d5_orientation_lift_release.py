@@ -6,6 +6,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -90,3 +91,44 @@ def test_all_aggregate_and_provenance_labels(tmp_path: Path) -> None:
     all_row = result[result["block"] == "ALL"].iloc[0]
     assert bool(all_row["old_wrong_sign"]) is True
     assert bool(all_row["oriented_wrong_sign"]) is False
+
+    combined = mod.combine_empirical_and_model(empirical, oriented, [3])
+    summary = mod.summarize_transition(combined)
+    outcome = mod.write_interpretation(tmp_path, summary, result)
+    report = (tmp_path / "chl4d5_interpretacion.md").read_text(encoding="utf-8")
+    assert outcome["comparison_available"] is True
+    assert "provenance has been reconstructed" in report
+    assert "absent q=11,13 inputs" in report
+    assert "remains unresolved" not in report
+
+
+def test_old_model_input_rejects_zero_sum_row_instead_of_uniform_fallback(tmp_path: Path) -> None:
+    mod = load_script()
+    old = pd.DataFrame(q3_model_rows("B01", 0.52))
+    old.loc[old["from_residue"] == 2, "model_probability"] = 0.0
+    old_path = tmp_path / "old_zero_row.csv"
+    old.to_csv(old_path, index=False)
+
+    with pytest.raises(ValueError, match=r"zero-sum model row.*q=3.*from_residue=2"):
+        mod.normalize_old_model_direct(old_path)
+
+
+def test_matrix_from_rows_requires_explicit_uniform_policy() -> None:
+    mod = load_script()
+    rows = pd.DataFrame([
+        {"from_residue": 1, "to_residue": 1, "probability": 1.0},
+        {"from_residue": 1, "to_residue": 2, "probability": 0.0},
+        {"from_residue": 2, "to_residue": 1, "probability": 0.0},
+        {"from_residue": 2, "to_residue": 2, "probability": 0.0},
+    ])
+
+    with pytest.raises(ValueError, match=r"zero-sum model row.*from_residue=2"):
+        mod.matrix_from_rows(rows, 3, "probability")
+
+    _, uniform = mod.matrix_from_rows(
+        rows,
+        3,
+        "probability",
+        zero_row_policy="uniform",
+    )
+    assert np.allclose(uniform[1], [0.5, 0.5])

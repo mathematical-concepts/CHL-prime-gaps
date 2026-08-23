@@ -144,6 +144,193 @@ def safe_to_markdown(df: pd.DataFrame, index: bool = False) -> str:
 
 
 
+def _select_os_model_rows(
+    df: pd.DataFrame,
+    model_col: str | None,
+    model: str | None,
+) -> tuple[pd.DataFrame, str]:
+    """Select one OS model deterministically and reject absent requests."""
+    if model_col is None:
+        return df.copy(), str(model or "model")
+
+    choices = list(dict.fromkeys(df[model_col].astype(str).tolist()))
+    if not choices:
+        raise ValueError("OS CSV contains no model rows")
+    if model is not None:
+        selected = str(model)
+        if selected not in choices:
+            raise ValueError(
+                f"requested OS model {selected!r} is absent; available models={sorted(choices)}"
+            )
+    else:
+        preferred = "CHL2_path_excl_cond_eta"
+        selected = preferred if preferred in choices else choices[0]
+    out = df[df[model_col].astype(str) == selected].copy()
+    if out.empty:
+        raise ValueError(f"OS CSV contains no rows for selected model {selected!r}")
+    return out, selected
+
+
+def _global_os_model_scope(df: pd.DataFrame, block_col: str | None) -> pd.DataFrame:
+    """Return the unique global OS matrix used by the prime-stream mode."""
+    if block_col is None:
+        return df
+    labels = list(dict.fromkeys(df[block_col].astype(str).tolist()))
+    if "ALL" in labels:
+        return df[df[block_col].astype(str) == "ALL"].copy()
+    if len(labels) == 1:
+        return df.copy()
+    raise ValueError(
+        "from-prime-csv requires one global OS model matrix; "
+        f"found block labels without ALL: {labels}"
+    )
+
+
+def validate_os_model_support(
+    os_csv: str | Path,
+    mods: Sequence[int],
+    model: str | None = None,
+    *,
+    per_block: bool = False,
+    tolerance: float = 1e-10,
+) -> dict:
+    """Validate requested OS model matrices before any residual is computed.
+
+    The v1.8 pipeline silently emitted zero matrices for requested moduli that
+    were absent from the upstream OS CSV.  This gate makes missing moduli,
+    incomplete reduced-residue support, non-finite probabilities, and zero-sum
+    rows fatal instead of allowing a downstream uniform-row fallback.
+    """
+    requested = sorted(dict.fromkeys(int(q) for q in mods))
+    df = pd.read_csv(os_csv)
+    q_col = first_existing_column(df.columns, ["q", "modulus"])
+    model_col = first_existing_column(df.columns, ["model", "model_name"])
+    block_col = first_existing_column(df.columns, ["block", "block_id", "window"])
+    from_col = first_existing_column(df.columns, ["from_residue_b_prev_prime", "from_residue", "b"])
+    to_col = first_existing_column(df.columns, ["to_residue_a_current_prime", "to_residue", "a"])
+    prob_col = first_existing_column(df.columns, ["model_prob", "model_probability", "probability_model"])
+    count_col = first_existing_column(df.columns, ["row_count", "from_row_count"])
+    if q_col is None or from_col is None or to_col is None or prob_col is None:
+        raise ValueError(
+            "OS CSV must contain q/modulus, from/to residues, and model probabilities"
+        )
+
+    df, selected_model = _select_os_model_rows(df, model_col, model)
+    q_values = pd.to_numeric(df[q_col], errors="coerce")
+    if q_values.isna().any():
+        raise ValueError("OS CSV contains non-numeric modulus values")
+    df = df.copy()
+    df["__q"] = q_values.astype(int)
+
+    if per_block and block_col is not None:
+        scopes = [
+            (str(label), df[df[block_col].astype(str) == str(label)].copy())
+            for label in dict.fromkeys(df[block_col].astype(str).tolist())
+        ]
+    else:
+        scoped = _global_os_model_scope(df, block_col)
+        scopes = [("ALL", scoped)]
+
+    available_mods = sorted(int(q) for q in df["__q"].unique())
+    row_sums_all: list[float] = []
+    observed_cells = 0
+    expected_cells = 0
+    support_rows_by_scope: dict[str, dict[str, int]] = {}
+
+    for scope_label, scope in scopes:
+        available_scope = sorted(int(q) for q in scope["__q"].unique())
+        missing = sorted(set(requested) - set(available_scope))
+        if missing:
+            raise ValueError(
+                f"OS model {selected_model!r} is missing requested moduli {missing} "
+                f"in scope {scope_label!r}; available={available_scope}"
+            )
+        scope_counts: dict[str, int] = {}
+        for q in requested:
+            sub = scope[scope["__q"] == int(q)].copy()
+            residues = reduced_residues(int(q))
+            residue_set = set(residues)
+            mapped_from = pd.to_numeric(sub[from_col], errors="coerce")
+            mapped_to = pd.to_numeric(sub[to_col], errors="coerce")
+            if mapped_from.isna().any() or mapped_to.isna().any():
+                raise ValueError(
+                    f"OS model contains non-numeric residues for scope={scope_label}, q={q}"
+                )
+            sub["__from"] = mapped_from.astype(int).map(lambda x: x % int(q))
+            sub["__to"] = mapped_to.astype(int).map(lambda x: x % int(q))
+            sub = sub[
+                sub["__from"].isin(residue_set) & sub["__to"].isin(residue_set)
+            ].copy()
+
+            expected = {(b, a) for b in residues for a in residues}
+            keys = list(zip(sub["__from"].astype(int), sub["__to"].astype(int)))
+            if len(keys) != len(set(keys)):
+                raise ValueError(
+                    f"duplicate reduced-residue model cells for scope={scope_label}, q={q}"
+                )
+            actual = set(keys)
+            if actual != expected:
+                missing_cells = sorted(expected - actual)
+                extra_cells = sorted(actual - expected)
+                raise ValueError(
+                    f"incomplete reduced-residue model support for scope={scope_label}, q={q}; "
+                    f"missing={missing_cells[:8]}, extra={extra_cells[:8]}"
+                )
+
+            probs = pd.to_numeric(sub[prob_col], errors="coerce").to_numpy(dtype=float)
+            if not np.isfinite(probs).all():
+                raise ValueError(
+                    f"non-finite model probabilities for scope={scope_label}, q={q}"
+                )
+            if (probs < 0).any():
+                raise ValueError(
+                    f"negative model probabilities for scope={scope_label}, q={q}"
+                )
+            sub["__prob"] = probs
+
+            if count_col is not None:
+                counts = pd.to_numeric(sub[count_col], errors="coerce").to_numpy(dtype=float)
+                if not np.isfinite(counts).all() or (counts < 0).any():
+                    raise ValueError(
+                        f"invalid row counts for scope={scope_label}, q={q}"
+                    )
+
+            row_sums = sub.groupby("__from", sort=True)["__prob"].sum()
+            zero_rows = [int(b) for b in residues if float(row_sums.get(b, 0.0)) <= 0.0]
+            if zero_rows:
+                raise ValueError(
+                    f"zero-sum model rows for scope={scope_label}, q={q}: {zero_rows}"
+                )
+            normalized = sub["__prob"] / sub["__from"].map(row_sums)
+            normalized_sums = normalized.groupby(sub["__from"]).sum().to_numpy(dtype=float)
+            if not np.allclose(normalized_sums, 1.0, rtol=0.0, atol=float(tolerance)):
+                raise ValueError(
+                    f"normalized model rows do not sum to one for scope={scope_label}, q={q}"
+                )
+
+            row_sums_all.extend(float(x) for x in row_sums.to_numpy(dtype=float))
+            observed_cells += len(keys)
+            expected_cells += len(expected)
+            scope_counts[str(q)] = len(keys)
+        support_rows_by_scope[scope_label] = scope_counts
+
+    return {
+        "requested_mods": requested,
+        "available_mods": available_mods,
+        "missing_requested_mods": [],
+        "zero_sum_model_rows": [],
+        "model_support_gate_pass": True,
+        "model_support_scope": "per-block" if per_block and block_col is not None else "global",
+        "model_support_selected_model": selected_model,
+        "model_support_blocks": [label for label, _ in scopes],
+        "model_support_expected_cells": int(expected_cells),
+        "model_support_observed_cells": int(observed_cells),
+        "model_support_rows_by_scope": support_rows_by_scope,
+        "model_probability_row_sum_min_before_normalization": float(min(row_sums_all)),
+        "model_probability_row_sum_max_before_normalization": float(max(row_sums_all)),
+    }
+
+
 def sha256_file(path: str | Path, chunk_size: int = 1024 * 1024) -> str:
     """Return the SHA-256 digest of a file without loading it into memory."""
     digest = hashlib.sha256()
@@ -359,32 +546,24 @@ def read_prime_column(path: str | Path, chunksize: int = 1_000_000):
 
 
 def build_model_matrices_from_os_csv(os_csv: str | Path, mods: Sequence[int], model: str | None = None) -> dict[int, TransferMatrix]:
-    """Load CHL2 model transfer matrices from an OS transition CSV."""
+    """Load validated CHL2 model transfer matrices from an OS transition CSV."""
+    validate_os_model_support(os_csv, mods, model, per_block=False)
     df = pd.read_csv(os_csv)
     q_col = first_existing_column(df.columns, ["q", "modulus"])
-    if q_col is None:
-        raise ValueError("OS CSV must contain a q/modulus column")
     model_col = first_existing_column(df.columns, ["model", "model_name"])
+    block_col = first_existing_column(df.columns, ["block", "block_id", "window"])
     from_col = first_existing_column(df.columns, ["from_residue_b_prev_prime", "from_residue", "b"])
     to_col = first_existing_column(df.columns, ["to_residue_a_current_prime", "to_residue", "a"])
     prob_col = first_existing_column(df.columns, ["model_prob", "model_probability", "probability_model"])
     count_col = first_existing_column(df.columns, ["row_count", "from_row_count"])
-    if from_col is None or to_col is None or prob_col is None:
-        raise ValueError("OS CSV must contain from/to residue columns and a model probability column")
-    if model_col and model:
-        df = df[df[model_col].astype(str) == str(model)]
-    elif model_col:
-        choices = list(df[model_col].astype(str).unique())
-        preferred = "CHL2_path_excl_cond_eta"
-        selected = preferred if preferred in choices else choices[0]
-        df = df[df[model_col].astype(str) == selected]
-        model = selected
-    else:
-        model = model or "model"
+    if q_col is None or from_col is None or to_col is None or prob_col is None:
+        raise ValueError("OS CSV must contain q/from/to columns and a model probability column")
+    df, selected_model = _select_os_model_rows(df, model_col, model)
+    df = _global_os_model_scope(df, block_col)
 
     out: dict[int, TransferMatrix] = {}
     for q in mods:
-        sub = df[df[q_col].astype(int) == int(q)]
+        sub = df[pd.to_numeric(df[q_col], errors="coerce").astype(int) == int(q)]
         residues = reduced_residues(q)
         idx = {r: i for i, r in enumerate(residues)}
         mat = np.zeros((len(residues), len(residues)), dtype=float)
@@ -398,14 +577,20 @@ def build_model_matrices_from_os_csv(os_csv: str | Path, mods: Sequence[int], mo
             if count_col is not None:
                 row_counts[bi] = max(row_counts[bi], float(row[count_col]))
         rs = mat.sum(axis=1)
-        nz = rs > 0
-        mat[nz] = mat[nz] / rs[nz, None]
-        out[int(q)] = TransferMatrix(q=int(q), residues=tuple(residues), probabilities=mat, row_counts=row_counts if count_col else None, label=str(model))
+        mat = mat / rs[:, None]
+        out[int(q)] = TransferMatrix(
+            q=int(q),
+            residues=tuple(residues),
+            probabilities=mat,
+            row_counts=row_counts if count_col else None,
+            label=str(selected_model),
+        )
     return out
 
 
 def load_matrix_sets_from_os_csv(os_csv: str | Path, mods: Sequence[int], model: str | None, eps: float = 1e-12) -> list[LoadedMatrixSet]:
-    """Read empirical and model transfer matrices from a CHL2 OS CSV."""
+    """Read validated empirical and model transfer matrices from a CHL2 OS CSV."""
+    validate_os_model_support(os_csv, mods, model, per_block=True)
     df = pd.read_csv(os_csv)
     q_col = first_existing_column(df.columns, ["q", "modulus"])
     model_col = first_existing_column(df.columns, ["model", "model_name"])
@@ -422,15 +607,8 @@ def load_matrix_sets_from_os_csv(os_csv: str | Path, mods: Sequence[int], model:
         raise ValueError("OS CSV must contain empirical probabilities or counts")
     if model_prob_col is None:
         raise ValueError("OS CSV must contain model probabilities")
-    if model_col and model:
-        df = df[df[model_col].astype(str) == str(model)]
-    elif model_col:
-        choices = list(df[model_col].astype(str).unique())
-        selected = "CHL2_path_excl_cond_eta" if "CHL2_path_excl_cond_eta" in choices else choices[0]
-        df = df[df[model_col].astype(str) == selected]
-        model = selected
-    else:
-        model = model or "model"
+    df, selected_model = _select_os_model_rows(df, model_col, model)
+    model = selected_model
 
     block_values = ["ALL"] if block_col is None else list(df[block_col].astype(str).unique())
     out: list[LoadedMatrixSet] = []
@@ -1070,6 +1248,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             "block_plan_total_expected_transitions": block_plan.total_expected_transitions if block_plan else 0,
         }
 
+    model_support_audit = validate_os_model_support(
+        args.os_csv,
+        mods,
+        args.model,
+        per_block=(args.mode == "from-os-csv"),
+    )
+
     if args.mode == "from-os-csv":
         matrix_sets = load_matrix_sets_from_os_csv(args.os_csv, mods=mods, model=args.model, eps=args.eps)
         stream_meta = {}
@@ -1126,6 +1311,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "hash_inputs": args.hash_inputs,
         "output_dir": str(outdir),
         "provenance": provenance,
+        **model_support_audit,
         **boundary_meta,
         **stream_meta,
         **counts,
