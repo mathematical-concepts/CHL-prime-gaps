@@ -16,6 +16,7 @@ dependencies = [
     "pandas>=1.5",
     "pytest>=9.0.3",
     "scipy>=1.10",
+    "matplotlib>=3.8",
 ]
 
 [tool.setuptools]
