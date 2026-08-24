@@ -301,8 +301,14 @@ def test_figure_builder_generates_separate_svg_files(tmp_path: Path) -> None:
         env=_env(),
     )
     svgs = sorted(target.glob("*.svg"))
-    assert len(svgs) == 8
+    assert len(svgs) == 11
     assert all(p.stat().st_size > 1000 for p in svgs)
+    expected_conceptual = {
+        "fig_construction_chain.svg",
+        "fig_tuple_anatomy.svg",
+        "fig_repro_pipeline.svg",
+    }
+    assert expected_conceptual <= {p.name for p in svgs}
     heatmap = (target / "fig_y_sweep_heatmap.svg").read_text(encoding="utf-8")
     assert "#ffffff" in heatmap.lower()
 
@@ -312,7 +318,7 @@ def test_figure_builder_generates_separate_svg_files(tmp_path: Path) -> None:
     assert manifest["pdf_fonttype"] == 42
     assert manifest["ps_fonttype"] == 42
     assert manifest["svg_hashsalt"] == "chl2-v2.0.0"
-    assert len(manifest["outputs"]) == 8
+    assert len(manifest["outputs"]) == 11
     assert not manifest["skipped"]
 
 
@@ -364,6 +370,18 @@ def test_readme_uses_canonical_v2_paths_and_reconstructed_table4_language() -> N
     assert "withdrawn as a scientific baseline" in text
     assert "historical provenance remains unresolved" not in text
     assert "reference_outputs/v2.0" not in text
+    assert "CHL2_conditional_hardy_littlewood_markov_whitepaper_v2_0_0_rc1.tex" in text
+    assert "docs/build_paper.py" in text
+    assert "Matplotlib `3.11.1`" in text
+    assert "fig_construction_chain" in text
+
+    reproduce = REPO / "docs" / "REPRODUCE_V2_0_0.md"
+    assert reproduce.is_file()
+    reproduce_text = reproduce.read_text(encoding="utf-8")
+    assert "model_support_gate_pass = true" in reproduce_text
+    assert "old_model_support_gate_pass = true" in reproduce_text
+    assert "a10_release_gate_pass = true" in reproduce_text
+    assert "python docs/build_paper.py" in reproduce_text
 
     provenance = REPO / "docs" / "NAIVE_TABLE4_LEGACY_PROVENANCE.md"
     assert provenance.is_file()

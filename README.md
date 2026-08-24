@@ -24,7 +24,7 @@ $$p_r=P(g\equiv r\pmod q),$$
 
 then the orientation lift distributes $p_r$ over the valid directed edges $b\to b+r$ in the reduced-residue graph before row normalization. This corrects the previous-gap-conditioned direct projection and removes the apparent $q=3$ wrong-sign discrepancy.
 
-The current public whitepaper source and PDF are under `docs/`. The v2.0.0 release is built from the scripts documented below; scientific CSVs and DS1 are generated locally and are not committed to Git.
+The versioned v2.0.0 manuscript source is `docs/CHL2_conditional_hardy_littlewood_markov_whitepaper_v2_0_0_rc1.tex`. The release PDF is generated locally under `outputs/v2_release_paper/` and attached to the published release; it is not committed with scientific outputs. The archived v1.8 source and PDF remain under `docs/` for historical comparison. Scientific CSVs and DS1 are generated locally and are not committed to Git.
 
 ## Reproducibility policy
 
@@ -88,11 +88,7 @@ python -m pip install -r requirements.txt
 python -m pip install -e .
 ```
 
-The data-driven figure builder additionally requires Matplotlib:
-
-```bash
-python -m pip install "matplotlib>=3.8"
-```
+Matplotlib is installed by both `requirements.txt` and `pyproject.toml`. For the release build, use the frozen `uv.lock` under Python 3.11 or later; that environment resolves Matplotlib `3.11.1`, which is required for byte-identical PDF/SVG figure hashes.
 
 Run the tests:
 
@@ -499,7 +495,7 @@ tables_manifest.json
 
 Every fragment records its source path and SHA-256 in comments. The manifest records all source and output hashes.
 
-## Generating data-driven figures
+## Generating paper figures
 
 ```bash
 python docs/build_figures.py \
@@ -512,6 +508,9 @@ python docs/build_figures.py \
 Generated figures include:
 
 ```text
+fig_construction_chain.*
+fig_tuple_anatomy.*
+fig_repro_pipeline.*
 fig_chl2_chl1_gain.*
 fig_y_sweep_heatmap.*
 fig_orientation_lift_diagonal.*
@@ -523,7 +522,21 @@ fig_hrp_factorial_effects.*
 figures_manifest.json
 ```
 
-These are the data-driven figures. Conceptual diagrams, if retained in the final TeX, must also have public producers but are not synthesized from scientific CSVs.
+The first three diagrams are deterministic conceptual figures produced by `docs/figure_scripts/fig_conceptual.py`; the remaining figures are generated from canonical scientific CSVs.
+
+## Compiling the v2.0.0 whitepaper
+
+After the canonical paper assets exist:
+
+```bash
+SOURCE_DATE_EPOCH=0 python docs/build_paper.py \
+  --tex docs/CHL2_conditional_hardy_littlewood_markov_whitepaper_v2_0_0_rc1.tex \
+  --assets-dir outputs/v2_release_paper_assets \
+  --output-dir outputs/v2_release_paper \
+  --strict-assets
+```
+
+The builder validates the table and figure manifests, required asset hashes, publication-safe figure metadata, the release Matplotlib version, and LaTeX references before writing the PDF and `paper_build_manifest.json`. Passing `--build-assets` runs both asset builders first. The complete clean-checkout procedure is in [`docs/REPRODUCE_V2_0_0.md`](docs/REPRODUCE_V2_0_0.md).
 
 ## Mapping whitepaper items to scripts
 
@@ -539,7 +552,7 @@ These are the data-driven figures. Conceptual diagrams, if retained in the final
 | Orientation-lift replacement | `chl4d5_orientation_lift_os_replacement.py` | `v2_release_chl4d5_orientation_lift_os_replacement/chl2_os_old_direct_vs_oriented.csv` |
 | H/R/P compatibility | `chl2_factor_compatibility_audit.py` | `v2_release_chl2_factor_compatibility/chl2_factorial_effects_summary.csv` |
 | Paper tables | `docs/build_tables.py` | canonical local outputs above |
-| Data-driven figures | `docs/build_figures.py` | canonical local outputs above |
+| Paper figures | `docs/build_figures.py` | canonical local outputs above plus deterministic conceptual diagrams |
 
 ## Runtime telemetry and provenance
 
@@ -583,4 +596,4 @@ The repository does not claim an asymptotic theorem for primes. The results are 
 
 ## License and citation
 
-The project is released under the MIT license. Use `CITATION.cff` for citation metadata and `docs/` for the whitepaper source and build instructions.
+The project is released under the MIT license. Use `CITATION.cff` for v2.0.0 citation metadata, [`CHANGELOG.md`](CHANGELOG.md) for the version history, [`RELEASE_NOTES_v2.0.0.md`](RELEASE_NOTES_v2.0.0.md) for the release scope, and `docs/` for the manuscript source and build instructions.

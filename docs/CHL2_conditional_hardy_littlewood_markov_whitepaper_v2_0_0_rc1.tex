@@ -1,0 +1,637 @@
+\documentclass[10pt]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage[margin=0.74in]{geometry}
+\usepackage{amsmath,amssymb,amsthm,mathtools}
+\usepackage{booktabs,longtable,array,tabularx}
+\usepackage{graphicx}
+\usepackage{float}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{url}
+\usepackage{enumitem}
+\usepackage{caption}
+\usepackage{microtype}
+\usepackage{adjustbox}
+\usepackage[section]{placeins}
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue,
+  citecolor=blue,
+  urlcolor=blue,
+  pdftitle={A Conditional Hardy--Littlewood Markov Kernel for Consecutive Prime Gaps},
+  pdfauthor={Jose Antonio Cano Gregorio}
+}
+\ifdefined\pdfinfoomitdate\pdfinfoomitdate=1\fi
+\ifdefined\pdftrailerid\pdftrailerid{}\fi
+\ifdefined\pdfsuppressptexinfo\pdfsuppressptexinfo=15\fi
+\setlength{\parskip}{0.47em}
+\setlength{\parindent}{0pt}
+\setlist[itemize]{leftmargin=1.25em,itemsep=0.15em,topsep=0.25em}
+\setlist[enumerate]{leftmargin=1.5em,itemsep=0.15em,topsep=0.25em}
+\emergencystretch=3em
+\sloppy
+\newtheorem{definition}{Definition}
+\newtheorem{lemma}{Lemma}
+\newtheorem{proposition}{Proposition}
+\newtheorem{empirical}{Empirical Result}
+\newtheorem{protocol}{Protocol}
+\newcommand{\SY}{\mathfrak{S}_Y}
+\newcommand{\CHLone}{\mathrm{CHL1}}
+\newcommand{\CHLtwo}{\mathrm{CHL2}}
+\newcommand{\Epath}{E_Y^{\mathrm{path}}}
+\newcommand{\Omegapath}{\Omega_Y^{\mathrm{path}}}
+\newcommand{\loglik}{\ell}
+\providecommand{\CHLTableDir}{outputs/v2_release_paper_assets/tables}
+\providecommand{\CHLFigureDir}{outputs/v2_release_paper_assets/figures}
+\title{A Conditional Hardy--Littlewood Markov Kernel for Consecutive Prime Gaps}
+\author{Jose Antonio Cano Gregorio}
+\date{Whitepaper v2.0.0 RC1\\\small Concept DOI: \href{https://doi.org/10.5281/zenodo.20368548}{10.5281/zenodo.20368548}}
+\begin{document}
+\maketitle
+\begin{abstract}
+We introduce CHL2, a finite conditional Markov kernel for consecutive prime gaps.  The construction converts the Hardy--Littlewood singular-series weight of a triple into the conditional ratio
+\[
+R_Y(g_2\mid g_1)=\frac{\SY(\{0,g_1,g_1+g_2\})}{\SY(\{0,g_1\})},
+\]
+and multiplies it by a first-order no-interior-prime survival factor $\exp[-\Omega_Y^{\mathrm{path}}(g_1,g_2;x)]$.  A common exponential tilt fixes the finite-support mean in every model, block, and stratum, after which row normalization produces the transition law.
+
+The DS1 audit covers ten chronological blocks in $[10^{11},10^{11}+2\cdot10^9]$, with $78{,}934{,}825$ pair-count transitions and support $g\le2400$.  At $Y=47$, CHL2 improves the ratio-only CHL1 kernel by $8.376322\times10^{-4}$ nats per event on the full window, with positive gain in all ten blocks.  The gain remains positive in every principal stratum for $Y\in\{31,47,61,73\}$, and the conditional kernel outperforms the audited order-zero baselines.
+
+For modular diagnostics, we distinguish a gap-residue population from a reduced-residue transition matrix.  The orientation lift distributes each mass $p_r=P(g\equiv r\pmod q)$ over the valid directed edges $b\to b+r$ before row normalization.  Relative to the fully specified absolute-prime previous-gap-conditioned control, the lift removes the $q=3$ wrong-sign diagnostic and improves weighted KL and $L^1$ in all $55$ audited block--modulus comparisons.  The v1.8 Table~4 values for $q=11,13$ are traced to missing upstream moduli, zero rows, and a downstream uniform fallback; v2.0.0 excludes that mixed legacy artifact as a scientific baseline.
+
+A complete $2^3$ compatibility audit of the factors $H=\SY(\{0,g_2\})$, $R=R_Y(g_2\mid g_1)$, and $P=e^{-\Omega_Y^{\mathrm{path}}}$ places CHL2 ($R\times P$ without $H$) first on the full window.  The interaction $H{:}R$ is negative throughout the audited block/filter cells, showing that the marginal pair factor is antagonistic once the conditional ratio is present.  These are finite-window computational results, not asymptotic theorems.
+\end{abstract}
+\tableofcontents
+\listoftables
+\listoffigures
+\newpage
+
+\section{Introduction}
+Classical Hardy--Littlewood heuristics assign weights to admissible constellations.  For the triple
+\[
+H_3(g_1,g_2)=\{0,g_1,g_1+g_2\},
+\]
+that static weight is not yet a transition law for consecutive gaps.  A consecutive-gap model must condition on the previous gap, suppress candidates that contain an interior prime, normalize on a finite support, and only then translate the resulting gap law into any modular transition diagnostic.
+
+\begin{figure}[H]\centering
+\includegraphics[width=0.96\textwidth]{\CHLFigureDir/fig_construction_chain.pdf}
+\caption{Construction and evaluation chain.  Each arrow removes a distinct obstruction: static weights are not conditional probabilities, endpoint constellations are not necessarily consecutive, and gap-residue populations are not yet row-wise prime-residue transitions.}\label{fig:construction_chain}
+\end{figure}
+
+The model is deliberately conservative.  It does not alter the singular series, and it does not claim an asymptotic description of prime gaps.  It asks whether an explicit conditional factorization predicts a finite chronological prime-gap window better than natural controls, whether the gain is stable, and which parts of the factorization are compatible when placed on a common conditional support.
+
+\subsection{Main contributions}
+\begin{enumerate}
+\item A self-contained finite conditional kernel CHL1 based on the ratio $\SY(H_3)/\SY(H_2)$.
+\item A consecutive-gap kernel CHL2 obtained by multiplying CHL1 by a first-order no-interior survival factor and applying a common terminal mean anchor.
+\item A DS1 likelihood audit with chronological-block and truncation-horizon stability checks.
+\item A distinction between gap-population prediction and intra-class modular assignment, implemented by the valid-edge orientation lift.
+\item A five-modulus replacement of the historical Table~4 control, with the v1.8 missing-modulus fallback reconstructed and excluded from current claims.
+\item A direct-control residual audit showing a stable, nearly one-mode $q=3$ discrepancy before orientation lift.
+\item A complete $H/R/P$ factorial audit on common support, identifying stable antagonism between the marginal pair factor $H$ and the conditional ratio $R$.
+\end{enumerate}
+
+\section{Related work}
+\subsection{Consecutive-prime residue biases}
+The modular part of this paper sits in the line of work initiated by Lemke Oliver and Soundararajan, who showed that consecutive prime pairs are not uniformly distributed among reduced-residue pairs modulo $q$ and explained the observed biases using Hardy--Littlewood heuristics \cite{lemke-sound}.  Tao's exposition gives a particularly transparent account of the $q=3$ case and of the combinatorial multiplicity that favors some gap residues over others \cite{tao2016biases}.  In that direct counting direction, a gap divisible by $3$ has two possible reduced starting classes, whereas a nonzero gap residue has only one.
+
+\subsection{Gap populations and inter-class bias}
+Holt's work is especially close to the present diagnostic viewpoint.  His gap-population framework studies how populations of small gaps evolve through stages of the Eratosthenes sieve and how those populations are assigned to residue classes \cite{holt2016,holt2024}.  In this language, population models address an \emph{inter-class} question: how much mass belongs to each gap-residue class.  Holt explicitly separates this from the \emph{intra-class} question of how the mass belonging to a fixed gap-residue class is distributed across the ordered pairs realizing that class; see the concluding discussion of \cite{holt2024}.  This distinction is useful for the present paper because a gap kernel naturally produces a population
+\[
+p_r=P(g\equiv r\pmod q),
+\]
+whereas the modular diagnostic requires a row-wise transition matrix $T_q(b,a)$.
+
+\subsection{The present diagnostic}
+The orientation lift used below supplies the null intra-class assignment associated with a gap-residue population.  It distributes $p_r$ over the valid directed reduced-residue edges $b\to b+r$ and then normalizes by row.  The contribution here is not the residue multiplicity itself, but its formalization as a model-agnostic diagnostic operator for gap kernels.  Applied to CHL2, this operator shows that the apparent $q=3$ anomaly of the naive direct diagnostic was caused by an incomplete projection from gap residues to transition rows, not by a failure of the CHL2 gap-survival kernel.
+
+\subsection{Residue patterns and sieve-theoretic context}
+Wu studies nonuniform patterns of consecutive prime residues modulo prime moduli and connects such patterns to Hardy--Littlewood $k$-tuple heuristics \cite{wu2019}.  Lau studies existence and lower bounds for residue-class patterns of consecutive primes using modifications of Maynard--Tao sieve methods \cite{lau2024}.  These works provide context for residue patterns of consecutive primes, but they do not formulate the diagnostic projection from a model-produced gap-residue population to a transition matrix used here.  The present paper remains finite and computational: it defines a conditional gap kernel, audits it on DS1, and then evaluates its modular predictions through the valid-edge lift.
+
+\section{Preliminaries}
+Let $p_1<p_2<\cdots$ be the increasing sequence of primes and let
+\[
+g_n=p_{n+1}-p_n.
+\]
+For two consecutive gaps we write
+\[
+g_1=p_{n+1}-p_n,\qquad g_2=p_{n+2}-p_{n+1}.
+\]
+
+\begin{definition}[Truncated singular series]
+Fix a truncation horizon $Y$.  For a finite set $H\subset\mathbb Z$, define
+\[
+\SY(H)=\prod_{p\le Y}\frac{1-\nu_p(H)/p}{(1-1/p)^{|H|}},
+\]
+where $\nu_p(H)$ is the number of distinct residue classes occupied by $H$ modulo $p$.
+\end{definition}
+
+\begin{definition}[Admissibility at horizon $Y$]
+A set $H$ is admissible at horizon $Y$ if
+\[
+\nu_p(H)<p\qquad\text{for every prime }p\le Y.
+\]
+If $\nu_p(H)=p$ for some $p\le Y$, the local factor vanishes and the model assigns a hard zero.
+\end{definition}
+
+All sums over future candidate gaps are over even $g_2\ge2$, since all prime gaps after $2$ are even.  The horizon $Y$ is a finite audit horizon, not an asymptotic sieve level.
+
+\begin{lemma}[Hard-zero support]
+If $H$ occupies every residue class modulo some prime $p\le Y$, then $\SY(H)=0$.  Consequently every kernel below gives zero mass to that candidate configuration.
+\end{lemma}
+
+\section{From constellations to a Markov kernel}\label{sec:chl-kernels}
+\subsection{CHL1: conditional singular-series ratio}
+Let
+\[
+H_2(g_1)=\{0,g_1\},\qquad H_3(g_1,g_2)=\{0,g_1,g_1+g_2\}.
+\]
+A Hardy--Littlewood singular series is a topological weight.  It tells us how local congruence obstructions favor or suppress a finite constellation, but it does not by itself know at which height $x$ the primes are being sampled.  The first step toward a transition kernel is therefore to ask a conditional question: once the first endpoint pair $H_2(g_1)$ is present, what additional singular-series cost is incurred by appending the third point $g_1+g_2$?
+
+This gives the conditional ratio
+\[
+R_Y(g_2\mid g_1)=\frac{\SY(H_3(g_1,g_2))}{\SY(H_2(g_1))}.
+\]
+This ratio is the first source of Markov memory: the previous gap $g_1$ changes the residue pattern of the triple and therefore changes the local factors of the next candidate gap.  At this stage, however, $R_Y$ still only supplies relative arithmetic weights.  If we row-normalized these weights without a scale constraint, the resulting mean gap would be determined by the finite support and the truncation horizon rather than by the local prime density.
+
+The prime number theorem supplies the missing scale.  Near height $x$, the unfiltered mean prime gap is approximately $\log x$.  Conceptually, the Lagrange multiplier $\eta_Y(x)$ is the maximum-entropy scale correction that would enforce the local row mean
+\[
+\sum_{\substack{g_2\ge2\\g_2\ \mathrm{even}}}g_2 P_Y(g_2\mid g_1;x)\approx \log x.
+\]
+In the finite audits, however, the support is often filtered.  On a stratum such as \texttt{NO\_120}, the conditional support no longer represents the unconditional prime-number-theorem scale.  The operational rule used in Section~\ref{sec:protocol} is therefore: solve a single $\eta$ per model, block, and stratum so that the model mean, averaged over the empirical distribution of previous gaps $g_1$, matches the empirical mean of $g_2$ in that same block and stratum.  This rule is applied identically to every model and baseline in the same audit cell, so the scale anchor contributes no relative advantage to CHL2.
+
+Thus the exponential factor $e^{\eta_Y(x)g_2}$ is not a fitted residual force; it is the common finite-support scale correction that converts a dimensionless topological weight into a locally scaled probability distribution.  The indicator $\mathbf 1_{\mathrm{adm},Y}^{(3)}(g_1,g_2)$ below means that the triple $H_3(g_1,g_2)$ is admissible at horizon $Y$.  With this scale anchor in place, we can define the first conditional kernel.
+
+\begin{definition}[CHL1 kernel]
+The CHL1 ratio-only kernel is
+\[
+P_Y^{\CHLone}(g_2\mid g_1;x)=\frac{\mathbf 1_{\mathrm{adm},Y}^{(3)}(g_1,g_2)R_Y(g_2\mid g_1)e^{\eta_Y(x)g_2}}{Z_Y^{\CHLone}(g_1;x)},
+\]
+with
+\[
+Z_Y^{\CHLone}(g_1;x)=\sum_{\substack{h\ge2\\h\ \mathrm{even}}}\mathbf 1_{\mathrm{adm},Y}^{(3)}(g_1,h)R_Y(h\mid g_1)e^{\eta_Y(x)h}.
+\]
+\end{definition}
+On the finite even support, the log-partition is convex in $\eta_Y$ and the mean is monotone, so the anchoring equation has a unique numerical solution whenever the support has nonzero variance.  This is why $\eta_Y$ is stable numerically and why it should be interpreted as a scale anchor rather than as an empirical tuning parameter.
+
+\subsection{Why CHL1 is not yet a consecutive-gap model}
+CHL1 weights the endpoints $0,g_1,g_1+g_2$.  It does not exclude additional primes between $g_1$ and $g_1+g_2$.  For a true consecutive gap, every interior position $g_1+u$ must fail to be prime.
+
+\begin{figure}[H]\centering
+\includegraphics[width=0.94\textwidth]{\CHLFigureDir/fig_tuple_anatomy.pdf}
+\caption{Endpoint constellation and possible interior prime positions.  CHL1 weights the endpoints; CHL2 additionally penalizes the conditional intensity of interior primes.}\label{fig:tuple_anatomy}
+\end{figure}
+
+For each even $u$ with $2\le u\le g_2-2$, define
+\[
+H_4(u;g_1,g_2)=\{0,g_1,g_1+u,g_1+g_2\}.
+\]
+The raw probability scale for a single candidate integer near height $x$ to be prime is the prime-number-theorem density $1/\log x$.  The singular series then modulates this base density by the conditional cost of adding the interior point $g_1+u$ to the already weighted endpoint triple $H_3$.  In other words, the factor $1/\log x$ supplies the global density scale, while the ratio $\SY(H_4)/\SY(H_3)$ supplies the local arithmetic correction.
+
+Conditioned on $H_3$, the first-order Hardy--Littlewood intensity for the interior point is therefore approximated by
+\[
+I_Y(u\mid g_1,g_2;x)=\frac{1}{\log x}\frac{\SY(H_4(u;g_1,g_2))}{\SY(H_3(g_1,g_2))}.
+\]
+Figure~\ref{fig:tuple_anatomy} shows the geometry of this term: CHL1 weights the endpoints, while CHL2 asks how many plausible interior primes those endpoints leave behind.  Summing these intensities gives
+\[
+\Omegapath(g_1,g_2;x)=\sum_{\substack{2\le u\le g_2-2\\u\ \mathrm{even}}}\frac{1}{\log x}\frac{\SY(\{0,g_1,g_1+u,g_1+g_2\})}{\SY(\{0,g_1,g_1+g_2\})},
+\]
+and the no-interior survival factor is
+\[
+\Epath(g_1,g_2;x)=\exp[-\Omegapath(g_1,g_2;x)].
+\]
+
+\subsection{CHL2 kernel}
+\begin{definition}[CHL2 path-exclusion kernel]
+\[
+P_Y^{\CHLtwo}(g_2\mid g_1;x)=\frac{\mathbf 1_{\mathrm{adm},Y}^{(3)}(g_1,g_2)R_Y(g_2\mid g_1)\Epath(g_1,g_2;x)e^{\eta_Y(x)g_2}}{Z_Y^{\CHLtwo}(g_1;x)},
+\]
+where
+\[
+Z_Y^{\CHLtwo}(g_1;x)=\sum_{\substack{h\ge2\\h\ \mathrm{even}}}\mathbf 1_{\mathrm{adm},Y}^{(3)}(g_1,h)R_Y(h\mid g_1)\Epath(g_1,h;x)e^{\eta_Y(x)h}.
+\]
+\end{definition}
+
+\begin{figure}[H]\centering
+\fbox{\begin{minipage}{0.92\textwidth}
+\[
+P_Y^{\CHLtwo}\propto
+\underbrace{\mathbf 1_{\mathrm{adm}}^{(3)}}_{\text{hard support}}
+\cdot
+\underbrace{R_Y(g_2\mid g_1)}_{\text{conditional HL}}
+\cdot
+\underbrace{e^{-\Omega_Y^{\mathrm{path}}}}_{\text{no-interior survival}}
+\cdot
+\underbrace{e^{\eta_Y g_2}}_{\text{scale anchor}}.
+\]
+\end{minipage}}
+\caption{Multiplicative anatomy of the CHL2 kernel.}\label{fig:kernel_anatomy}
+\end{figure}
+
+
+\section{Experimental protocol}\label{sec:protocol}
+The formulas above define finite kernels.  The audit protocol specifies the finite support, the empirical window, the strata, the baselines, and the scoring rule.  This section is intentionally operational: it is meant to let a reader reconstruct exactly what the tables measure.
+
+\subsection{The DS1 dataset}
+DS1 is the finite prime-gap window used throughout this paper.  It is generated by the repository script
+\[
+\texttt{data\_generation/generate\_prime\_gap\_blocks.py}
+\]
+from the interval
+\[
+[10^{11},\,10^{11}+2\cdot 10^9]
+\]
+with maximum recorded gap support $g_{\max}=2400$.  The generated chronological prime file is converted into pair-count tables of consecutive gaps $(g_1,g_2)$, with a count column $H$ recording how many times each pair occurs in a block.  The release audit contains ten chronological blocks, denoted B01--B10, and a total of $78{,}934{,}825$ observed transitions.
+
+The number ten is not a mathematical parameter of the kernel.  It is an audit design choice: the blocks are large enough to give stable conditional statistics while still allowing block-level checks of sign, gain, and runtime.  In the repository these block files are named \texttt{parent\_wide\_B01.csv.gz}, \ldots, \texttt{parent\_wide\_B10.csv.gz}; in the paper we call them pair-count blocks.
+
+The likelihood audits use these pair-count blocks.  The modular diagnostics require one additional data object: the chronological prime stream generated by the same data-generation script before aggregation, stored as \texttt{real\_primes.csv.gz}.  For each consecutive pair $(p_{n-1},p_n)$ in that stream, the modular audit records the reduced-residue transition $(p_{n-1}\bmod q,p_n\bmod q)$ for each audited modulus $q\in\{3,5,7,11,13\}$.  Thus the pair-count tables are sufficient for likelihood scoring, while the empirical matrices $T_q^{\rm emp}$ are computed from the chronological prime stream.  The scripts \texttt{paper\_audits/chl4\_modular\_transfer\_residual\_audit.py} and \texttt{paper\_audits/chl4d5\_orientation\_lift\_os\_replacement.py} reconstruct these matrices and compare them with the orientation-lifted model matrices.
+
+The local scale is held fixed at the DS1 height.  Numerically, the scripts use
+\[
+\log x=25.328436\ldots,
+\]
+corresponding to the left endpoint $x=10^{11}$.  Across a two-billion interval near $10^{11}$, the relative variation in $\log x$ is below two percent.  An event-wise or block-wise $\log(p_n)$ refinement is a natural future audit, but is not used in the reported DS1 tables.
+
+\subsection{Finite support and the multiplier \texorpdfstring{$\eta_Y(x)$}{eta\_Y(x)}}
+For each model, block, and stratum, the kernel is evaluated on the finite pair table available in that stratum.  The support is therefore the set of even candidate gaps $g_2$ appearing in the pair-count table after the stratum filter has been applied, with hard-zero admissibility factors still enforced.  Conditional models are normalized row-wise over candidates with the same previous gap $g_1$.
+
+The multiplier $\eta_Y(x)$ is solved once per model, block, and stratum so that the model mean, averaged over the empirical distribution of previous gaps $g_1$, matches the empirical mean of $g_2$ in that same block and stratum.  It is not solved separately for every row $g_1$, and it is not a fitted residual parameter.  It is the finite-support scale anchor imposed after the arithmetic weights have been specified.  On the full DS1 support this operational mean is close to the local PNT scale; on filtered strata it is the only meaningful anchor because the filter deliberately changes the mean gap.  Every baseline in the same block and stratum receives the same anchoring rule.
+
+\subsection{Evaluation strata}
+The strata are deterministic filters on the observed pair $(g_1,g_2)$.  Let
+\[
+G_{\max}(g_1,g_2)=\max(g_1,g_2).
+\]
+The reported strata are:
+\begin{center}\scriptsize
+\begin{tabularx}{\textwidth}{>{\raggedright\arraybackslash}p{0.30\textwidth}>{\raggedright\arraybackslash}X}
+\toprule
+Stratum & Definition and role \\
+\midrule
+\texttt{ALL} & All observed pair-count rows in the block. \\
+\texttt{LOW\_ONLY\_LE58} & $G_{\max}\le 58$.  Dense small-gap regime; strongest low-wheel coherence. \\
+\texttt{MID\_59\_120} & $59\le G_{\max}\le 120$.  Intermediate regime; where the modulo-$3$ scale wave changes sign. \\
+\texttt{MID\_121\_240} & $121\le G_{\max}\le 240$.  Early tail, still with enough mass for diagnostics. \\
+\texttt{MID\_121\_400} & $121\le G_{\max}\le 400$.  A wider early-tail diagnostic, intentionally overlapping with \texttt{MID\_121\_240}. \\
+\texttt{NO\_58} & $G_{\max}>58$.  Ablates the dense small-gap regime. \\
+\texttt{NO\_120} & $G_{\max}>120$.  Tail-only stress diagnostic with moderate mass. \\
+\texttt{NO\_240} & $G_{\max}>240$.  Very sparse stress diagnostic; retained for transparency, not as a central claim. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+The thresholds $58$, $120$, and $240$ were chosen before interpretation to separate the dense low-gap support, the first transition band, and progressively lower-mass tail regimes.  The overlapping middle bands are not mistakes: they test whether conclusions depend on the exact width of the early-tail window.  The \emph{principal strata} are all strata except \texttt{NO\_240}; \texttt{NO\_240} is retained as a sparse stress diagnostic with $2{,}606$ events and is excluded from every headline claim.
+
+By \emph{low-wheel} we mean the structure governed by the smallest primes in the wheel, especially $2,3,5,7$.  These primes dominate the hard admissibility constraints and the largest singular-series effects in the dense small-gap regime.
+
+When a table reports a filter-specific log-likelihood, the model is re-normalized on the filtered support.  Thus a \emph{filter-renormalized} score compares models only within that stratum.  Such scores should not be compared numerically with all-support scores from different filters, since every stratum has its own normalized support.
+
+\subsection{Baselines}
+All baselines are evaluated on the same empirical pair-count support and, when appropriate, with the same finite-support mean-gap anchoring.  The main baselines are:
+\begin{description}[leftmargin=1.5em]
+\item[CHL1 ratio-only.] The conditional singular-series kernel of Definition 3, using $R_Y(g_2\mid g_1)$ but no no-interior factor.
+\item[Mask-only conditional support, \texttt{noPhi\_cond\_eta}.] The conditional hard support without the singular-series ratio,
+\[
+P(g_2\mid g_1)\propto \mathbf 1_{\mathrm{adm},Y}^{(3)}(g_1,g_2)e^{\eta g_2}.
+\]
+This isolates what is already forced by admissibility and scale.
+\item[Mask-only with no-interior exclusion, \texttt{noPhi\_gap\_excl\_cond\_eta}.] The same hard support multiplied by $E_Y^{\mathrm{path}}$, but without $R_Y$.  This tests whether no-interior survival alone explains the gain.
+\item[Order-zero HL2.] A memoryless gap kernel depending only on the candidate gap,
+\[
+P(g)\propto \mathbf 1_{\mathrm{adm},Y}^{(2)}(g)\,\SY(\{0,g\})e^{\eta g}.
+\]
+It has no dependence on the previous gap $g_1$.
+\item[Cramer order-zero.] A memoryless exponential gap model on the admissible support,
+\[
+P(g)\propto \mathbf 1_{\mathrm{adm},Y}^{(2)}(g)e^{-g/\log x}.
+\]
+\item[Cramer--Granville order-zero.] A Cramer exponential gap model multiplied by the two-point singular series,
+\[
+P(g)\propto \mathbf 1_{\mathrm{adm},Y}^{(2)}(g)\SY(\{0,g\})e^{-g/\log x}.
+\]
+The gap-exclusion variant multiplies this by the one-gap no-interior factor
+\[
+E_Y^{\rm gap}(g;x)=\exp[-\Omega_Y^{\rm gap}(g;x)],
+\]
+where
+\[
+\Omega_Y^{\rm gap}(g;x)=\sum_{\substack{2\le u\le g-2\\u\ \mathrm{even}}}\frac{1}{\log x}\frac{\SY(\{0,u,g\})}{\SY(\{0,g\})}.
+\]
+These baselines are zero-memory controls: they may model gap-size populations but not the transition $g_1\mapsto g_2$.
+\end{description}
+
+\subsection{Scoring}
+For a model $M$, the conditional log-likelihood per event is
+\[
+\ell(M)=\frac{1}{N}\sum_{g_1,g_2}H(g_1,g_2)\log P_M(g_2\mid g_1),
+\]
+where $H(g_1,g_2)$ is the empirical pair count in the block and stratum.  For order-zero models, $P_M(g_2\mid g_1)$ is replaced by the memoryless probability $P_M(g_2)$.
+
+The reported KL divergence is the empirical conditional cross-entropy minus the empirical conditional entropy:
+\[
+\mathrm{KL}(P_{\rm emp}\Vert P_M)
+= -\ell(M)-H_{\rm emp}(g_2\mid g_1),
+\]
+with rows weighted by the empirical mass of $g_1$.  It is therefore not a uniform average over states.  The memory-irreducibility audit compares conditional kernels against order-zero baselines on the same support; large positive likelihood gains indicate that dependence on $g_1$ cannot be removed without losing predictive information.
+
+\subsection{Modular diagnostics}
+For a modulus $q$, the empirical transition matrix is
+\[
+T_q^{\rm emp}(b,a)=P(p_n\equiv a\pmod q\mid p_{n-1}\equiv b\pmod q),
+\]
+over reduced residue classes.  It is computed from the chronological prime stream \texttt{real\_primes.csv.gz}, not from the aggregated pair-count table alone.  If $C_q(b,a)$ is the count of transitions $p_{n-1}\equiv b$, $p_n\equiv a\pmod q$, then
+\[
+T_q^{\rm emp}(b,a)=\frac{C_q(b,a)}{\sum_c C_q(b,c)}.
+\]
+A gap kernel first induces a gap-residue population
+\[
+p_r^M=P_M(g\equiv r\pmod q),
+\]
+computed by weighting the model probabilities over the DS1 pair-count rows and the empirical distribution of previous gaps.  The orientation lift of Section~\ref{sec:orientation_lift_results} then converts $p_r^M$ into a row-wise transition matrix.  This step is essential: it is not equivalent to assigning $p_r$ independently to every row.
+
+For the modular tables, the diagonal probability is the row average
+\[
+\mathrm{diag}(T_q)=\frac{1}{\varphi(q)}\sum_{b\in(\mathbb Z/q\mathbb Z)^*}T_q(b,b),
+\]
+and the reported modular KL is row-weighted by the empirical initial-residue mass
+\[
+\pi_b=\frac{\sum_a C_q(b,a)}{\sum_{b,a}C_q(b,a)}:
+\qquad
+\mathrm{KL}(T_q^{\rm emp}\Vert T_q^{M})=
+\sum_b \pi_b\sum_a T_q^{\rm emp}(b,a)\log\frac{T_q^{\rm emp}(b,a)}{T_q^{M}(b,a)}.
+\]
+The standalone OS diagnostic also reports row-weighted row-cosine, row-weighted $L^1$, and Pearson $\chi^2/N$.
+
+\section{Conditional likelihood and block stability}\label{sec:likelihood}
+The likelihood comparison is generated from the public A02 outputs.  Table~\ref{tab:main-likelihood} reports the pooled score in each stratum.  On $S_{\mathrm{all}}$, CHL2 gains $8.376322\times10^{-4}$ nats per event over CHL1, equivalent to a total log-likelihood improvement of approximately $66{,}118.35$ over the DS1 pair-count mass.
+
+\begin{table}[H]\centering\scriptsize
+\begin{adjustbox}{max width=\textwidth}
+\input{\CHLTableDir/table_main_likelihood.tex}
+\end{adjustbox}
+\caption{Conditional likelihood of CHL1 and CHL2.  $S_{>240}$ is a sparse stress diagnostic and is excluded from headline claims.}\label{tab:main-likelihood}
+\end{table}
+
+\begin{figure}[H]\centering
+\includegraphics[width=0.94\textwidth]{\CHLFigureDir/fig_chl2_chl1_gain.pdf}
+\caption{CHL2 minus CHL1 log-likelihood per event.  Every principal aggregate is positive; the sparse $S_{>240}$ stress diagnostic is negative.}\label{fig:chl2-gain}
+\end{figure}
+
+The chronological-block audit separates a pooled gain from blockwise sign stability.  The full window, dense regime, transition regime, $S_{121:240}$, and $S_{>58}$ are positive in all ten blocks.  The wider early-tail windows $S_{121:400}$ and $S_{>120}$ are positive in aggregate but positive in seven of ten blocks.  This distinction is retained in the claims rather than hidden by pooling.
+
+\begin{table}[H]\centering\scriptsize
+\begin{adjustbox}{max width=\textwidth}
+\input{\CHLTableDir/table_chl2_chl1_block_stability.tex}
+\end{adjustbox}
+\caption{Unweighted chronological-block stability of the CHL2--CHL1 gain.}\label{tab:block-stability}
+\end{table}
+
+\subsection{Memory irreducibility}
+The order-zero controls remove dependence on the previous gap.  Table~\ref{tab:memory} shows that CHL2 has a large positive gain over each audited zero-memory baseline on the full window.  These comparisons mix memory, arithmetic structure, and in some cases scale alignment; they establish predictive irreducibility of the conditional model, not a unique causal attribution to one factor.
+
+\begin{table}[H]\centering\small
+\begin{adjustbox}{max width=\textwidth}
+\input{\CHLTableDir/table_memory_irreducibility.tex}
+\end{adjustbox}
+\caption{CHL2 relative to audited order-zero baselines on $S_{\mathrm{all}}$.}\label{tab:memory}
+\end{table}
+
+\section{Truncation-horizon stability}\label{sec:y-sweep}
+The finite singular series and survival intensities depend on the truncation horizon $Y$.  The public sweep holds the protocol fixed and uses $Y\in\{31,47,61,73\}$.  Every principal stratum remains positive for all four horizons; only the sparse $S_{>240}$ stress diagnostic remains negative.
+
+\begin{table}[H]\centering\scriptsize
+\begin{adjustbox}{max width=\textwidth}
+\input{\CHLTableDir/table_y_sweep.tex}
+\end{adjustbox}
+\caption{CHL2--CHL1 gain across truncation horizons.}\label{tab:y-sweep}
+\end{table}
+
+\begin{figure}[H]\centering
+\includegraphics[width=0.88\textwidth]{\CHLFigureDir/fig_y_sweep_heatmap.pdf}
+\caption{Truncation-horizon stability.  The diverging scale separates the negative sparse stress row from the positive principal strata.}\label{fig:y-sweep}
+\end{figure}
+
+\section{Gap-population scale wave}\label{sec:scale-wave}
+The A05 audit asks whether CHL2 reproduces the population of next-gap residues modulo $3$ across gap-length bands.  These filters act on $g_2$ alone; they are not the likelihood strata defined through $\max(g_1,g_2)$.  The diagonal branch changes sign across scale, and CHL2 tracks that population-level wave closely.
+
+\begin{table}[H]\centering\scriptsize
+\begin{adjustbox}{max width=\textwidth}
+\input{\CHLTableDir/table_scale_wave.tex}
+\end{adjustbox}
+\caption{Modulo-$3$ gap-population wave under filters on the candidate gap $g_2$.}\label{tab:scale-wave}
+\end{table}
+
+\begin{figure}[H]\centering
+\includegraphics[width=0.82\textwidth]{\CHLFigureDir/fig_scale_wave_d3.pdf}
+\caption{Empirical and CHL2 $D_3$ gap-population statistic across $g_2$ filters.}\label{fig:scale-wave-d3}
+\end{figure}
+
+\begin{figure}[H]\centering
+\includegraphics[width=0.82\textwidth]{\CHLFigureDir/fig_scale_wave_residual.pdf}
+\caption{Residual $D_3$ after the CHL2 gap-population prediction.  The very sparse $g_2>240$ band is shown for transparency, not as a principal result.}\label{fig:scale-wave-residual}
+\end{figure}
+
+This audit supports CHL2 as a gap-population model.  It does not identify $\Omega_Y^{\mathrm{path}}$ as an autonomous modular mechanism: raw residue-level associations of $\Omega_Y^{\mathrm{path}}$ are confounded by gap length because the residue class is itself a deterministic function of the gap.
+
+\section{Modular transfer and orientation lift}\label{sec:modular}
+\subsection{Orientation lift}\label{sec:orientation_lift_results}
+Let $G_q=(\mathbb Z/q\mathbb Z)^*$ and let $p_r=P(g\equiv r\pmod q)$.  Define
+\[
+E_r(q)=\{(b,a)\in G_q^2:a\equiv b+r\pmod q\},\qquad N_r(q)=|E_r(q)|.
+\]
+The orientation lift assigns mass $p_r/N_r(q)$ to each valid edge in $E_r(q)$ and normalizes by row.  For $q=3$, the zero residue is realized by two self-loops, while each nonzero residue is realized by one directed edge.  Skipping that multiplicity produces a wrong row geometry even when the gap-residue population is accurate.
+
+The release comparison uses the fully specified five-modulus control
+\[
+\texttt{absolute\_prime\_os\_previous\_gap\_conditioned},
+\]
+not the historical mixed Table~4 artifact.  Table~\ref{tab:orientation} and Figures~\ref{fig:orientation-diag}--\ref{fig:orientation-kl} use the aggregated empirical matrix labeled \texttt{ALL}.  The lift improves weighted KL and weighted $L^1$ for all $55$ block--modulus comparisons, and it changes the $q=3$ wrong-sign count from $11/11$ (including \texttt{ALL}) to $0/11$.
+
+\begin{table}[H]\centering\scriptsize
+\begin{adjustbox}{max width=\textwidth}
+\input{\CHLTableDir/table_modular_orientation_lift.tex}
+\end{adjustbox}
+\caption{Empirical diagonal probability, reproducible previous-gap-conditioned control, and orientation-lifted CHL2 matrix.  KL is computed on the aggregated \texttt{ALL} matrix.}\label{tab:orientation}
+\end{table}
+
+\begin{figure}[H]\centering
+\includegraphics[width=0.88\textwidth]{\CHLFigureDir/fig_orientation_lift_diagonal.pdf}
+\caption{Diagonal probabilities under the empirical matrix, the reproducible previous-gap control, and the orientation lift.}\label{fig:orientation-diag}
+\end{figure}
+
+\begin{figure}[H]\centering
+\includegraphics[width=0.88\textwidth]{\CHLFigureDir/fig_orientation_lift_kl.pdf}
+\caption{Weighted KL before and after orientation lift.}\label{fig:orientation-kl}
+\end{figure}
+
+\subsection{Historical Table 4 provenance}\label{sec:legacy-table4}
+The v1.8 Table~4 entries for $q=11$ and $q=13$ were not produced by the same five-modulus scientific control used above.  The upstream OS CSV contained only $q=3,5,7$; the residual producer emitted zero rows for the absent modules; a downstream normalization replaced those rows by the uniform reduced-residue matrix.  This gives diagonal probabilities
+\[
+\frac{1}{\varphi(11)}=0.100000,
+\qquad
+\frac{1}{\varphi(13)}=0.083333\ldots.
+\]
+The reconstruction also reproduces the large legacy KL values.  We refer to the mixed historical object as \texttt{naive\_table4\_legacy}; it is retained only for provenance and is withdrawn as a scientific baseline.  The current release fails on missing modules, zero-sum external rows, incomplete support, or non-normalized imported model matrices.
+
+\section{Direct-control residual and character concentration}\label{sec:residual}
+Before applying the orientation lift, the previous-gap-conditioned control leaves a stable $q=3$ discrepancy.  The diagonal log-odds statistic
+\[
+D_3=\log\frac{T(1,1)T(2,2)}{T(1,2)T(2,1)}
+\]
+is negative empirically and positive under the direct control in every block.  Table~\ref{tab:q3-residual} reports the resulting residual.
+
+\begin{table}[H]\centering\scriptsize
+\begin{adjustbox}{max width=\textwidth}
+\input{\CHLTableDir/table_chl4_q3_residual.tex}
+\end{adjustbox}
+\caption{The direct previous-gap-conditioned $q=3$ residual by chronological block.}\label{tab:q3-residual}
+\end{table}
+
+The character-spectrum audit shows that this residual is concentrated in the same non-principal mode in all ten blocks and has effective rank near one.  Thus the object that the orientation lift must explain is stable and low-dimensional rather than a collection of unrelated block fluctuations.  This is a diagnostic statement about the direct projection; the corrected orientation-lift comparison is the release result in Section~\ref{sec:modular}.
+
+\section{Common-support \texorpdfstring{$H/R/P$}{H/R/P} compatibility}\label{sec:factorial}
+The A10 audit places three factors on a common conditional support and common terminal target:
+\[
+H=\SY(\{0,g_2\}),\qquad
+R=R_Y(g_2\mid g_1),\qquad
+P=e^{-\Omega_Y^{\mathrm{path}}(g_1,g_2;x)}.
+\]
+The eight vertices of the $2^3$ cube differ only by the presence or absence of $H$, $R$, and $P$.  This removes the support and anchoring asymmetries that prevent causal interpretation of unrelated historical baselines.
+
+\begin{table}[H]\centering\scriptsize
+\begin{adjustbox}{max width=\textwidth}
+\input{\CHLTableDir/table_hrp_model_ranking.tex}
+\end{adjustbox}
+\caption{Ranking of the eight $H/R/P$ vertices on $S_{\mathrm{all}}$.}\label{tab:hrp-ranking}
+\end{table}
+
+\begin{figure}[H]\centering
+\includegraphics[width=0.94\textwidth]{\CHLFigureDir/fig_hrp_model_ranking.pdf}
+\caption{Log-likelihood loss per event relative to the best $H/R/P$ vertex.}\label{fig:hrp-ranking}
+\end{figure}
+
+CHL2, the vertex $(H,R,P)=(0,1,1)$, ranks first on the full window.  The main and interaction effects in Table~\ref{tab:hrp-effects} show that $R$ and $P$ are positive on average, while $H$ and the interaction $H{:}R$ are negative with stable sign across the ten blocks.
+
+\begin{table}[H]\centering\scriptsize
+\begin{adjustbox}{max width=\textwidth}
+\input{\CHLTableDir/table_hrp_factorial_effects.tex}
+\end{adjustbox}
+\caption{Factorial effects on the full-window log-likelihood.}\label{tab:hrp-effects}
+\end{table}
+
+\begin{figure}[H]\centering
+\includegraphics[width=0.9\textwidth]{\CHLFigureDir/fig_hrp_factorial_effects.pdf}
+\caption{Main effects and interactions in the common-support $H/R/P$ design.}\label{fig:hrp-effects}
+\end{figure}
+
+The contextual additions are more directly interpretable.  Adding $P$ to CHL1 produces the positive CHL2 gain in all ten blocks.  Adding $H$ when $R$ is already present is negative both without and with $P$.
+
+\begin{table}[H]\centering\scriptsize
+\begin{adjustbox}{max width=\textwidth}
+\input{\CHLTableDir/table_hrp_context_effects.tex}
+\end{adjustbox}
+\caption{Selected contextual factor additions.}\label{tab:hrp-context}
+\end{table}
+
+The robust conclusion is contextual antagonism between $H$ and $R$, not the broader claim that $H$ is harmful in every possible family.  The sparse \texttt{NO\_240} filter remains a stress diagnostic and is not used to define the production kernel.
+
+\section{Scope, limitations, and withdrawn interpretations}\label{sec:limitations}
+\begin{itemize}
+\item The results are finite-window computational evaluations.  No asymptotic theorem for prime gaps is claimed.
+\item The support is finite and the terminal multiplier is fixed by a common mean constraint within each block and stratum.  The audit measures relative structure after this shared scale anchor.
+\item $\Omega_Y^{\mathrm{path}}$ is retained as a first-order no-interior survival factor because it improves conditional likelihood in the CHL context.  It is not presented as an autonomous modular mechanism.  Residue-level comparisons of $\Omega_Y^{\mathrm{path}}$ are length-confounded unless they use exact-length, local-neighbor, or explicit residual controls.
+\item The orientation lift is a diagnostic projection from a gap-residue population to a reduced-residue transition matrix.  It is not a theorem that all intra-class prime-residue structure is generated by uniform valid-edge assignment.
+\item Quantitative low-wheel and local LOS negative-control results explored during development are not reported here because their exact public producers are not part of the v2.0.0 reproduction chain.  No release claim depends on those numbers.
+\item The historical \texttt{naive\_table4\_legacy} object is documented as an implementation artifact, not as a model or scientific baseline.
+\end{itemize}
+
+\section{Reproducibility}\label{sec:reproducibility}
+The release contains the method and builders, not DS1 or precomputed scientific CSVs.  A clean checkout follows the chain
+\[
+\text{scripts}
+\longrightarrow
+\text{local data and audit outputs}
+\longrightarrow
+\text{generated tables and figures}
+\longrightarrow
+\text{TeX}
+\longrightarrow
+\text{PDF}.
+\]
+The exact commands are collected in \texttt{docs/REPRODUCE\_V2\_0\_0.md}.  The table and figure builders attach SHA-256 records to their manifests, and the audit producers record runtime telemetry; A07, A08, and A10 additionally record Git and input provenance.
+
+\begin{figure}[H]\centering
+\includegraphics[width=0.92\textwidth]{\CHLFigureDir/fig_repro_pipeline.pdf}
+\caption{Public reproduction architecture.  Generated datasets, CSVs, figures, and PDFs remain under ignored local output directories or release artifacts.}\label{fig:repro-pipeline}
+\end{figure}
+
+The canonical final command is
+\begin{verbatim}
+python docs/build_paper.py --build-assets --strict-assets
+\end{verbatim}
+which validates the paper assets, compiles the source, checks unresolved references, and writes a PDF plus a build manifest under \texttt{outputs/v2\_release\_paper/}.
+
+\section{Conclusion}
+CHL2 is a finite conditional Hardy--Littlewood Markov kernel for consecutive prime gaps.  It conditions a triple singular-series weight on the previous gap, adds a first-order no-interior survival factor, applies a common scale anchor, and normalizes row-wise.  On DS1, CHL2 improves CHL1 on the full window in all ten chronological blocks, remains positive in every principal stratum across four truncation horizons, and outperforms the audited order-zero controls.
+
+The modular result is a correction of the diagnostic layer rather than a modification of the gap kernel.  A gap-residue population must be distributed over valid oriented reduced-residue edges before row normalization.  With that projection, the $q=3$ wrong-sign discrepancy disappears and weighted KL and $L^1$ improve in every audited block--modulus comparison.  The historical $q=11,13$ Table~4 entries are now explained as a missing-modulus uniform fallback and are excluded from the scientific baseline.
+
+Finally, the common-support $H/R/P$ cube places CHL2 first on the full window and identifies stable antagonism between the marginal pair factor $H$ and the conditional ratio $R$.  The release therefore supports a narrow conclusion: the production object is the conditional ratio times local path survival, $R\times P$, evaluated as a finite reproducible kernel.
+
+\appendix
+\section{Orientation-lift details}\label{app:orientation}
+For a modulus $q$, let $G_q=(\mathbb Z/q\mathbb Z)^*$ and let $p_r=P(g\equiv r\pmod q)$.  The directed edges associated with $r$ are
+\[
+E_r(q)=\{(b,a)\in G_q^2:a\equiv b+r\pmod q\}.
+\]
+Their number is $N_r(q)=|E_r(q)|$.  The orientation lift puts mass $p_r/N_r(q)$ on each edge in $E_r(q)$ and then normalizes by row.  If $N_r(q)=0$, the residue class contributes no reduced-residue transition.
+
+For prime $q$, $N_0(q)=q-1$ and $N_r(q)=q-2$ for $r\not\equiv0\pmod q$.  The asymmetry is most compressed at $q=3$, where the two-state graph has two diagonal self-loops for $r=0$ and one edge for each nonzero residue.  The release interpretation rests on this exact geometry and on the direct numerical comparison, not on a correlation across the five moduli.
+
+\section{Scale anchoring and first-order survival}\label{app:maxent-poisson}
+Suppose the arithmetic part of a row gives nonnegative weights $w(h)$ on a finite even support $\mathcal G$.  Exponential tilting with target mean $m$ gives
+\[
+P_\eta(h)=\frac{w(h)e^{\eta h}}{Z(\eta)},
+\qquad
+Z(\eta)=\sum_{h\in\mathcal G}w(h)e^{\eta h}.
+\]
+The mean satisfies
+\[
+\mathbb E_\eta[h]=\frac{d}{d\eta}\log Z(\eta),
+\qquad
+\frac{d}{d\eta}\mathbb E_\eta[h]=\operatorname{Var}_\eta(h)\ge0.
+\]
+Hence a non-degenerate finite support has a unique numerical anchor.  The DS1 audits apply the same one-scalar rule to every model in a block/filter cell; the anchor is a common scale constraint, not a CHL2-specific residual fit.
+
+For the survival factor, the possible interior positions have conditional first-order intensities $I_Y(u\mid g_1,g_2;x)$.  Under the weakly dependent rare-event approximation, the interior-prime count is approximated by a Poisson variable with mean
+\[
+\Omega_Y^{\mathrm{path}}=\sum_u I_Y(u\mid g_1,g_2;x),
+\]
+so the probability of no interior prime is approximated by $e^{-\Omega_Y^{\mathrm{path}}}$.  The finite audit evaluates the usefulness of this factor empirically; it does not assert independence of the interior events.
+
+\section{AI-assisted workflow disclosure}
+The author used AI-assisted systems, including ChatGPT, Gemini, and related tools, as interactive research assistants during exploratory, coding, diagnostic, and drafting phases.  Their use included code prototyping, debugging, construction of diagnostic tests, adversarial critique of hypotheses, summarization of numerical outputs, and drafting support.  All experiments were executed locally by the author.  All reported claims, mathematical formulations, code selections, and interpretations were reviewed and curated by the author, who assumes full responsibility for the manuscript.  No AI system is listed as an author.
+
+\begin{thebibliography}{99}
+\bibitem{bfi1986} E. Bombieri, J. B. Friedlander, and H. Iwaniec, \emph{Primes in arithmetic progressions to large moduli}, Acta Mathematica \textbf{156} (1986), 203--251.
+\bibitem{cramer1936} H. Cramer, \emph{On the order of magnitude of the difference between consecutive prime numbers}, Acta Arithmetica \textbf{2} (1936), 23--46.
+\bibitem{ford2016} K. Ford, B. Green, S. Konyagin, J. Maynard, and T. Tao, \emph{Long gaps between primes}, Journal of the American Mathematical Society \textbf{31} (2018), 65--105.
+\bibitem{friedlander-iwaniec} J. Friedlander and H. Iwaniec, \emph{Opera de Cribro}, American Mathematical Society Colloquium Publications, Vol. 57, AMS, 2010.
+\bibitem{gpy} D. A. Goldston, J. Pintz, and C. Y. Yildirim, \emph{Primes in tuples I}, Annals of Mathematics \textbf{170} (2009), 819--862.
+\bibitem{granville1995} A. Granville, \emph{Harald Cramer and the distribution of prime numbers}, Scandinavian Actuarial Journal \textbf{1995} (1995), 12--28.
+\bibitem{hardy-littlewood} G. H. Hardy and J. E. Littlewood, \emph{Some problems of Partitio Numerorum III}, Acta Mathematica \textbf{44} (1923), 1--70.
+\bibitem{holt2016} F. B. Holt, \emph{On the last digits of consecutive primes}, arXiv:1604.02443, 2016.
+\bibitem{holt2024} F. B. Holt, \emph{Expected biases in the distribution of consecutive primes}, arXiv:2405.03540, 2024.
+\bibitem{lau2024} C. F. Lau, \emph{Residue class patterns of consecutive primes}, arXiv:2409.12819, 2024.
+\bibitem{lemke-sound} R. J. Lemke Oliver and K. Soundararajan, \emph{Unexpected biases in the distribution of consecutive primes}, Proceedings of the National Academy of Sciences \textbf{113} (2016), E4446--E4454.
+\bibitem{lemke-sound-secondary} R. J. Lemke Oliver and K. Soundararajan, \emph{The distribution of consecutive prime biases and sums of sawtooth random variables}, arXiv:1709.06168, 2017.
+\bibitem{maynard-large} J. Maynard, \emph{Large gaps between primes}, Annals of Mathematics \textbf{183} (2016), 915--933.
+\bibitem{maynard-small} J. Maynard, \emph{Small gaps between primes}, Annals of Mathematics \textbf{181} (2015), 383--413.
+\bibitem{selberg} A. Selberg, \emph{On elementary methods in prime number theory and their limitations}, in \emph{Collected Papers}, Vol. I, Springer, 1989.
+\bibitem{tao2016biases} T. Tao, \emph{Biases between consecutive primes}, What's new, blog post, 14 March 2016, \url{https://terrytao.wordpress.com/2016/03/14/biases-between-consecutive-primes/}.
+\bibitem{wu2019} D. Wu, \emph{Nonuniform distributions of residues of prime sequences in prime moduli}, arXiv:1908.07095, 2019.
+\bibitem{zhang} Y. Zhang, \emph{Bounded gaps between primes}, Annals of Mathematics \textbf{179} (2014), 1121--1174.
+\end{thebibliography}
+\end{document}

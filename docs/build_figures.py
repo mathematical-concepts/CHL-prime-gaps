@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Generate data-driven CHL2 v2.0.0 figures from local audit outputs.
+"""Generate CHL2 v2.0.0 paper figures from public producers.
 
 The script produces one plot per figure file, uses the non-interactive Matplotlib
 backend, and records source/output SHA-256 values in ``figures_manifest.json``.
-Conceptual diagrams are intentionally outside this data-driven builder.
+Data-driven figures read canonical audit outputs; conceptual diagrams are
+constructed deterministically by a public Matplotlib producer.
 """
 from __future__ import annotations
 
@@ -25,8 +26,8 @@ try:
     import matplotlib
 except ImportError as exc:  # pragma: no cover - environment-dependent
     raise SystemExit(
-        "Figure generation requires Matplotlib. Install it with "
-        "`python -m pip install \"matplotlib>=3.8\"`."
+        "Figure generation requires the paper dependencies. Run `uv sync --frozen` "
+        "or install the project with `python -m pip install -e .`."
     ) from exc
 
 # Publication-safe and deterministic vector output.  Type 42 avoids Matplotlib
@@ -36,6 +37,7 @@ matplotlib.rcParams["ps.fonttype"] = 42
 matplotlib.rcParams["svg.hashsalt"] = "chl2-v2.0.0"
 
 from figure_scripts.common import parse_formats  # noqa: E402
+from figure_scripts.fig_conceptual import build as build_conceptual  # noqa: E402
 from figure_scripts.fig_chl2_chl1_gain import build as build_gain  # noqa: E402
 from figure_scripts.fig_hrp_factorial import build as build_hrp  # noqa: E402
 from figure_scripts.fig_orientation_lift import build as build_orientation  # noqa: E402
@@ -47,6 +49,7 @@ from release_assets import output_record, portable_path, sha256_file, source_rec
 FigureBuilder = Callable[[Path, Path, list[str]], tuple[list[Path], list[Path]]]
 
 BUILDERS: dict[str, FigureBuilder] = {
+    "conceptual": build_conceptual,
     "chl2_chl1_gain": build_gain,
     "y_sweep_heatmap": build_y_sweep,
     "orientation_lift": build_orientation,
