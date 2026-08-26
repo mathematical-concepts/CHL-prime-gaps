@@ -2,6 +2,16 @@
 
 All notable public changes to **CHL-prime-gaps** are documented here.
 
+## [2.0.0-rc1.1] - 2026-08-26
+
+### Corrected
+
+- Corrected GitHub rendering of the conditional singular-series ratio in
+  the root README.
+- Replaced the unsupported `\#` cardinality notation in `docs/README.md`
+  and `docs/ORIENTATION_LIFT_NOTE.md` with explicit cardinality bars.
+- No scientific results, generated figures, TeX source, or PDF content changed.
+
 ## [2.0.0] - 2026-08-24
 
 ### Added
