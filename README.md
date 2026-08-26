@@ -5,18 +5,11 @@
 
 **CHL-prime-gaps** contains the code and documentation for finite-window conditional Hardy--Littlewood models of consecutive prime gaps. The production kernel is
 
-$$
-\mathrm{CHL2}=R_Y(g_2\mid g_1)\,\exp[-\Omega_Y^{\mathrm{path}}(g_1,g_2;x)],
-$$
+$$\mathrm{CHL2}=R_Y(g_2\mid g_1)\,\exp\!\left[-\Omega_Y^{\mathrm{path}}(g_1,g_2;x)\right].$$
 
 where
 
-$$
-R_Y(g_2\mid g_1)
-=
-\frac{\mathfrak S_Y(\{0,g_1,g_1+g_2\})}
-     {\mathfrak S_Y(\{0,g_1\})}.
-$$
+$$R_Y(g_2\mid g_1)=\frac{\mathfrak{S}_Y(\{0,g_1,g_1+g_2\})}{\mathfrak{S}_Y(\{0,g_1\})}.$$
 
 The repository also implements an **orientation-lifted modular diagnostic**. If a gap model produces
 

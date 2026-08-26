@@ -14,7 +14,7 @@ $$b\to b+r\pmod q$$
 
 only when both $b$ and $b+r$ are reduced residue classes. Define
 
-$$N_r(q)=\#\{b\in(\mathbb Z/q\mathbb Z)^*:b+r\in(\mathbb Z/q\mathbb Z)^*\}.$$
+$$N_r(q)=\left|\left\{b\in(\mathbb Z/q\mathbb Z)^{*}:b+r\in(\mathbb Z/q\mathbb Z)^{*}\right\}\right|.$$
 
 The orientation lift puts mass $p_r/N_r(q)$ on each valid edge and then normalizes row-wise.
 

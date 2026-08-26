@@ -167,7 +167,7 @@ $$b\to b+r\pmod q$$
 
 for which both endpoints are reduced residues. If
 
-$$N_r(q)=\#\{b\in(\mathbb Z/q\mathbb Z)^*:b+r\in(\mathbb Z/q\mathbb Z)^*\},$$
+$$N_r(q)=\left|\left\{b\in(\mathbb Z/q\mathbb Z)^{*}:b+r\in(\mathbb Z/q\mathbb Z)^{*}\right\}\right|.$$
 
 then each valid edge receives mass $p_r/N_r(q)$ before row normalization. This diagnostic layer removes the apparent `q=3` wrong-sign discrepancy of the reproducible previous-gap-conditioned control.
 
